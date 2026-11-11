@@ -132,13 +132,16 @@ jobs:
         run: |
           version=$(sed -n 's/^VERSION=//p' build-ps5.sh)
           zip=build-ps5/PPSA99071-$version.zip
+          # the program's symbols beside it, to read a crash's addresses (names and addresses only)
+          cp build-ps5/symbols.txt "build-ps5/symbols-$version.txt"
+          cp build-ps5/segments.txt "build-ps5/segments-$version.txt"
           if gh release view "v$version" > /dev/null 2>&1; then
-            gh release upload "v$version" "$zip" --clobber
+            gh release upload "v$version" "$zip" "build-ps5/symbols-$version.txt" "build-ps5/segments-$version.txt" --clobber
             echo "The app replaced the one in release v$version"
           else
             draft=--draft
             [ "$PUBLISH" = true ] && draft=--latest
-            gh release create "v$version" "$zip" $draft --target "$GITHUB_SHA" --title "reColossus $version" \
+            gh release create "v$version" "$zip" "build-ps5/symbols-$version.txt" "build-ps5/segments-$version.txt" $draft --target "$GITHUB_SHA" --title "reColossus $version" \
               --notes-file .github/release-notes.md
           fi
           if [ "$PUBLISH" = true ]; then
