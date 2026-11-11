@@ -86,6 +86,29 @@ diff -ruN a/PS2Recomp/ps2xRuntime/cmake/ReleaseMode.cmake b/PS2Recomp/ps2xRuntim
          set_property(TARGET ${TargetName} PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
      else()
          message(WARNING "Interprocedural optimization not supported: ${ipo_error}")
+diff -ruN a/PS2Recomp/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp b/PS2Recomp/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
+--- a/PS2Recomp/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp	2026-11-11 00:15:59.358475849 -0300
++++ b/PS2Recomp/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp	2026-11-11 00:15:59.382159180 -0300
+@@ -1,3 +1,4 @@
++#include <memory>
+ #include <map>
+ #include <chrono>
+ #include "runtime/native_renderer.h"
+@@ -3461,7 +3462,14 @@
+     if (snapshot.empty())
+         return {};
+ 
++#if defined(PLATFORM_PS5)
++    // The PS5 target allows thread-locals aligned to 32 bytes at most: the backend (its page cache is aligned to 64)
++    // on the heap instead, one per thread as before.
++    thread_local std::unique_ptr<GSCpuBackend> snapshotOwner = std::make_unique<GSCpuBackend>();
++    GSCpuBackend &snapshotBackend = *snapshotOwner;
++#else
+     thread_local GSCpuBackend snapshotBackend;
++#endif
+     snapshotBackend.Initialize(snapshot.data(), static_cast<uint32_t>(snapshot.size()));
+     PresentationFrame frame = snapshotBackend.PresentFromLocalMemory(request);
+     // A game override drawing natively (runtime/native_renderer.h) shows its picture instead.
 diff -ruN a/PS2Recomp/ps2xRuntime/src/lib/ps2_audio.cpp b/PS2Recomp/ps2xRuntime/src/lib/ps2_audio.cpp
 --- a/PS2Recomp/ps2xRuntime/src/lib/ps2_audio.cpp	2026-11-10 23:40:58.178308489 -0300
 +++ b/PS2Recomp/ps2xRuntime/src/lib/ps2_audio.cpp	2026-11-10 23:41:14.954350608 -0300

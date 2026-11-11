@@ -54,9 +54,10 @@ if has compile; then
         -DPS2X_ENABLE_IOP_RPC_TRACE=OFF -DPS2X_ENABLE_CCACHE=OFF -DPS2X_ENABLE_SCCACHE=OFF \
         "-DPS2X_RUNNER_DIRS=$C/build/runner;$C/build/vu1rec;$C/game/overrides" > "$OUT/configure.log" 2>&1 ||
         { tail -40 "$OUT/configure.log"; echo "compile: configure failed ($OUT/configure.log)"; exit 1; }
-    cmake --build "$OUT/cmake" --target ps2EntryRunner ps2x_ps5_host ps2_runtime ps2_iop -j "$JOBS" 2>&1 |
+    # -k 0: every failing source in one run, so one round of fixes covers them all
+    cmake --build "$OUT/cmake" --target ps2EntryRunner ps2x_ps5_host ps2_runtime ps2_iop -j "$JOBS" -- -k 0 2>&1 |
         tee "$OUT/compile.log" | grep -E "error|FAILED|^\[[0-9]+/[0-9]+\]" | awk 'NR % 50 == 1 || /error|FAILED/'
-    [ "${PIPESTATUS[0]}" -eq 0 ] || { grep -m 40 -E "error" "$OUT/compile.log"; echo "compile: failed ($OUT/compile.log)"; exit 1; }
+    [ "${PIPESTATUS[0]}" -eq 0 ] || { grep -E "error:" "$OUT/compile.log" | sort | uniq -c | sort -rn | head -80; echo "compile: failed ($OUT/compile.log)"; exit 1; }
     echo "compile: done"
 fi
 

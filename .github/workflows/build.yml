@@ -92,9 +92,10 @@ jobs:
           bundle="$RUNNER_TEMP/gen/gen-$key.tar.gz"
           mkdir -p "$RUNNER_TEMP/gen" "$RUNNER_TEMP/disc"
           if [ "$REGENERATE" != true ] &&
-             gh release download generated --repo "$SOC_REPO" --pattern "gen-$key.tar.gz" -D "$RUNNER_TEMP/gen" 2>/dev/null; then
-            echo "The game's code from an earlier run (gen-$key)"
-            ./setup.sh --generated "$bundle"
+             gh release download generated --repo "$SOC_REPO" --pattern "gen-*$key.tar.gz" -D "$RUNNER_TEMP/gen" 2>/dev/null; then
+            found=$(ls "$RUNNER_TEMP"/gen/gen-*"$key".tar.gz | head -1)
+            echo "The game's code from an earlier run ($(basename "$found"))"
+            ./setup.sh --generated "$found"
             exit 0
           fi
           gh release download "$SOC_DISC_TAG" --repo "$SOC_REPO" -D "$RUNNER_TEMP/disc"
