@@ -27,6 +27,9 @@ has() { local s; for s in "${STAGES[@]}"; do [ "$s" = "$1" ] && return 0; done; 
 [ -d "$C/build/runner" ] && [ -f "$ROOT/work/game_hashes.inc" ] ||
     { echo "build: run ./setup.sh /path/to/SotC.iso first"; exit 1; }
 mkdir -p "$OUT/gen"
+# the toolchain file reads the SDK from the environment too: CMake's own test projects (check_ipo_supported) don't get
+# the cache variable
+export PS5_PAYLOAD_SDK=$SDK
 TOOLCHAIN=(-DCMAKE_TOOLCHAIN_FILE="$REUNDR/ps5/cmake/ps5.cmake" -DPS5_PAYLOAD_SDK="$SDK"
            -DCMAKE_C_COMPILER=/usr/lib/llvm-18/bin/clang -DCMAKE_CXX_COMPILER=/usr/lib/llvm-18/bin/clang++)
 # Zen 2; the code as reKing compiles the game's (-O2); exceptions and RTTI on (the PS5 target leaves RTTI off): the
