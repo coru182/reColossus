@@ -211,3 +211,15 @@ char *getcwd(char *buf, size_t size) {
     memcpy(buf, rc_cwd, len + 1);
     return buf;
 }
+
+/* utime: not in the PS5's libc module either (tools/check_imports.py found it in 0.2.0, RADV linked in whole: Mesa's
+ * shader disk cache marks an entry used with it). Only the file's times would change: the file's there or it isn't. */
+#include <sys/stat.h>
+struct utimbuf;
+int utime(const char *path, const struct utimbuf *times) {
+    struct stat st;
+    (void)times;
+    if (stat(path, &st) != 0)
+        return -1; /* errno from stat */
+    return 0;
+}
