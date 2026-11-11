@@ -405,6 +405,15 @@ namespace
         int fd = -1;
         if (path && (fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0666)) < 0)
             return nullptr;
+        if (fd >= 0)
+        {
+            // logging on: every line straight into the file, unbuffered, so that a crash loses none (slower: on
+            // only to find a problem)
+            FILE *stream = fdopen(fd, "w");
+            if (stream)
+                std::setvbuf(stream, nullptr, _IONBF, 0);
+            return stream;
+        }
         int ends[2];
         if (pipe(ends) == 0)
         {
@@ -487,6 +496,8 @@ int main(int, char **)
         std::clog.rdbuf(&streams);
     }
     Log("reColossus %s", RECOLOSSUS_VERSION);
+    // where the program was loaded: a crash report's addresses minus these give the offsets in the build's symbols
+    Log("addresses: ps2x_main=%p Log=%p", reinterpret_cast<void *>(&ps2x_main), reinterpret_cast<void *>(&Log));
 
     // the runtime's settings: the memory cards beside the app's data, then the player's own (env.txt)
     setenv("PS2X_MEMCARD_DIR", (kData / "memcards").c_str(), 0);
@@ -523,6 +534,7 @@ int main(int, char **)
     std::string boot = Child(game, kBoot).string();
     char arg0[] = "reColossus";
     char *argv[] = {arg0, boot.data(), nullptr};
+    Log("starting the runtime: %s", boot.c_str());
     const int rc = ps2x_main(2, argv);
     Log("the runtime returned %d", rc);
     std::fflush(stderr);

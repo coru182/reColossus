@@ -113,6 +113,16 @@ jobs:
         if: ${{ !inputs.toolchain_only }}
         run: ./build-ps5.sh
 
+      - name: The program's symbols (for reading crash addresses)
+        if: ${{ !inputs.toolchain_only }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: symbols
+          path: |
+            build-ps5/symbols.txt
+            build-ps5/segments.txt
+          retention-days: 30
+
       - name: Release
         if: ${{ !inputs.toolchain_only }}
         env:

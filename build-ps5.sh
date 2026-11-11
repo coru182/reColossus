@@ -18,7 +18,7 @@ VK=$REUNDR/build/deps/PS5_Vulkan
 SDK=$VK/.deps/native/ps5-payload-sdk
 OUT=$ROOT/build-ps5
 TITLE=PPSA99071
-VERSION=0.1.0
+VERSION=0.1.1
 JOBS=${JOBS:-$(nproc)}
 export PATH=/usr/lib/llvm-18/bin:$PATH
 STAGES=("$@"); [ ${#STAGES[@]} -gt 0 ] || STAGES=(compile link package)
@@ -114,6 +114,10 @@ if has link; then
     if [ -s "$work/raw_syscalls.txt" ]; then echo "link: raw syscalls left in:"; cat "$work/raw_syscalls.txt"; exit 1; fi
     echo "link: no raw syscalls"
     echo "link: $(du -h "$work/llvm-pie.elf" | cut -f1) $work/llvm-pie.elf"
+    # the program's symbols and segments, to read the addresses of a crash on the console (the app logs where it
+    # was loaded): names and addresses only, nothing of the game's code
+    llvm-nm-18 -n -C --defined-only "$work/llvm-pie.elf" > "$OUT/symbols.txt"
+    llvm-readelf-18 -lW "$work/llvm-pie.elf" > "$OUT/segments.txt"
 fi
 
 if has package; then

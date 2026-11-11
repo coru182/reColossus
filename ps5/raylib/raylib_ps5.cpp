@@ -152,6 +152,7 @@ namespace
         if (g_video.handle >= 0)
             return true;
         sceSystemServiceHideSplashScreen();
+        std::fprintf(stderr, "[ps5] VideoOut: opening\n");
         int handle = sceVideoOutOpen(255, 0, 0, nullptr);
         if (handle < 0)
         {
@@ -462,6 +463,7 @@ void InitWindow(int, int, const char *title)
 {
     if (g_windowReady)
         return;
+    std::fprintf(stderr, "[ps5] InitWindow\n");
     g_frame.assign(size_t(kWidth) * kHeight, 0xff000000u);
     g_windowReady = openVideo();
     std::fprintf(stderr, "[ps5] window \"%s\": VideoOut 1920x1080 %s\n", title ? title : "", g_windowReady ? "open" : "FAILED");

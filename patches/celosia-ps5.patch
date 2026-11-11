@@ -139,3 +139,33 @@ diff -ruN a/PS2Recomp/ps2xRuntime/src/lib/ps2_audio.cpp b/PS2Recomp/ps2xRuntime/
      return;
  #else
      for (auto &t : m_impl->activeSounds)
+diff -ruN a/PS2Recomp/ps2xRuntime/src/lib/ps2_runtime.cpp b/PS2Recomp/ps2xRuntime/src/lib/ps2_runtime.cpp
+--- a/PS2Recomp/ps2xRuntime/src/lib/ps2_runtime.cpp	2026-11-11 01:03:14.091556651 -0300
++++ b/PS2Recomp/ps2xRuntime/src/lib/ps2_runtime.cpp	2026-11-11 01:03:14.104547299 -0300
+@@ -963,17 +963,26 @@
+             std::exit(VU1Interpreter::generateRecompiled(spec.substr(0, colon).c_str(),
+                                                          spec.substr(colon + 1).c_str()));
+         }
++#if defined(PLATFORM_PS5)
++        std::cerr << "[ps5] initialize: guest memory" << std::endl;
++#endif
+         if (!m_memory.initialize())
+         {
+             std::cerr << "Failed to initialize PS2 memory" << std::endl;
+             return false;
+         }
+ 
++#if defined(PLATFORM_PS5)
++        std::cerr << "[ps5] initialize: core subsystems" << std::endl;
++#endif
+         if (!syncCoreSubsystems())
+         {
+             std::cerr << "Failed to bind runtime core subsystems" << std::endl;
+             return false;
+         }
++#if defined(PLATFORM_PS5)
++        std::cerr << "[ps5] initialize: window" << std::endl;
++#endif
+ #if defined(PLATFORM_VITA) && !defined(PS2X_VITA_SDL2_SHIM)
+         InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title); // raylib vita does not support audio
+ #else
