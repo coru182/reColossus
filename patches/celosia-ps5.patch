@@ -169,3 +169,18 @@ diff -ruN a/PS2Recomp/ps2xRuntime/src/lib/ps2_runtime.cpp b/PS2Recomp/ps2xRuntim
  #if defined(PLATFORM_VITA) && !defined(PS2X_VITA_SDL2_SHIM)
          InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title); // raylib vita does not support audio
  #else
+diff -ruN a/PS2Recomp/ps2xRuntime/src/main.cpp b/PS2Recomp/ps2xRuntime/src/main.cpp
+--- a/PS2Recomp/ps2xRuntime/src/main.cpp	2026-11-11 09:57:32.570748097 -0300
++++ b/PS2Recomp/ps2xRuntime/src/main.cpp	2026-11-11 09:57:32.605718327 -0300
+@@ -176,7 +176,10 @@
+     redirectStdioToLogcat();
+ #endif
+ #if defined(__linux__) && !defined(__ANDROID__)
+-    setenv("SOTC_NATIVE", "1", 0);
++    // reColossus's pipeline records the VU1 microcode the game runs: with the native renderer the game builds no
++    // PS2 display lists and the VU1 never runs, so RECOLOSSUS_EMULATED_GS keeps the emulated GS
++    if (!std::getenv("RECOLOSSUS_EMULATED_GS"))
++        setenv("SOTC_NATIVE", "1", 0);
+     setenv("PS2X_GS_THREADS", "2", 0);
+ #endif
+     setupTerminateLogger();

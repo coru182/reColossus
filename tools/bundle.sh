@@ -27,4 +27,4 @@ pack)
 esac
 # Raised when the pipeline itself changes (setup.sh's part after "Celosia's pipeline", or a patch that changes the
 # Linux runner), so older bundles are not used.
-GENERATION=2
+GENERATION=3
