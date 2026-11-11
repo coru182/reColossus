@@ -109,15 +109,18 @@ fi
 # Cross on the title screen now and then so that a new game starts
 export PS2X_INPUT_SCRIPT=${PS2X_INPUT_SCRIPT:-"20:DOWN:0.3;22:CROSS:0.3;30:CROSS:0.3;40:CROSS:0.3;60:CROSS:0.3;80:CROSS:0.3"}
 sed -i 's/cmd_autotest 40 >/cmd_autotest ${CELOSIA_VU1_SECONDS:-150} >/' "$C/celosia"
+# the emulated GS, so that the game builds its PS2 display lists and runs its VU1 microcode: with the Linux runner's
+# default native renderer the VU1 never runs and nothing is recorded (0.1.0 to 0.1.4 had no compiled microcode). The
+# patched runner leaves the native renderer off with this.
+export RECOLOSSUS_EMULATED_GS=1
 (cd "$C" && "${run[@]}" ./celosia setup --iso "$ISO")
-# the VU1 microcode the scripted run recorded, and what the run printed: without it every VU1 program is interpreted
-# on the console (0.1.0 to 0.1.4 had none)
-dumps=$(ls "$C"/build/vu1/*.bin 2>/dev/null | wc -l)
-compiled=$(ls "$C"/build/vu1rec 2>/dev/null | wc -l)
+# the VU1 microcode the scripted run recorded, and what the run printed about it
+dumps=$(find "$C/build/vu1" -maxdepth 1 -name '*.bin' 2>/dev/null | wc -l || true)
+compiled=$(find "$C/build/vu1rec" -maxdepth 1 -type f 2>/dev/null | wc -l || true)
 echo "setup: VU1 microcode: $dumps image(s) recorded, $compiled file(s) of recompiled code"
 if [ -f "$C/logs/autotest.log" ]; then
-    echo "setup: the scripted run's log (last lines):"
-    grep -v "^\[irq\]" "$C/logs/autotest.log" | tail -40 || true
+    echo "setup: the scripted run's VU1 lines (last ones):"
+    grep -E "vu1|VU1" "$C/logs/autotest.log" | tail -40 || true
 fi
 if [ "$compiled" -eq 0 ]; then
     echo "setup: no VU1 microcode was recompiled (the scripted run recorded none)"
