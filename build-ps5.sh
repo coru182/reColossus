@@ -18,7 +18,7 @@ VK=$REUNDR/build/deps/PS5_Vulkan
 SDK=$VK/.deps/native/ps5-payload-sdk
 OUT=$ROOT/build-ps5
 TITLE=PPSA99071
-VERSION=0.1.2
+VERSION=0.1.3
 JOBS=${JOBS:-$(nproc)}
 export PATH=/usr/lib/llvm-18/bin:$PATH
 STAGES=("$@"); [ ${#STAGES[@]} -gt 0 ] || STAGES=(compile link package)
@@ -100,7 +100,7 @@ if has link; then
     # overrides replace recompiled functions of the same name, as on the Vita (--allow-multiple-definition); every
     # thread with a stack the recompiled code fits in (posix_ps5.c)
     "$SDK/bin/prospero-lld" "${radv_linker_script[@]}" "${flags[@]}" --version-script "$work/exports.map" \
-        --exclude-libs=ALL --no-dynamic-linker --gc-sections --allow-multiple-definition --wrap=pthread_create \
+        --exclude-libs=ALL --no-dynamic-linker --gc-sections --allow-multiple-definition --wrap=pthread_create --wrap=chdir \
         -e _start -o "$work/llvm-pie.elf" \
         "$work/stubs/libSceAgc.so" "$work/stubs/libSceAgcDriver.so" \
         --whole-archive "${host[@]}" --no-whole-archive \
@@ -119,7 +119,8 @@ if has link; then
     llvm-nm-18 -n -C --defined-only "$work/llvm-pie.elf" > "$OUT/symbols.txt"
     llvm-readelf-18 -lW "$work/llvm-pie.elf" > "$OUT/segments.txt"
     # what the program imports from the system's modules (one that doesn't exist there jumps nowhere when called)
-    { echo; echo "Imports:"; llvm-nm-18 -u "$work/llvm-pie.elf"; } >> "$OUT/segments.txt"
+    llvm-nm-18 -u "$work/llvm-pie.elf" | awk '{print $NF}' > "$work/imports.txt"
+    { echo; echo "Imports:"; cat "$work/imports.txt"; } >> "$OUT/segments.txt"
 fi
 
 if has package; then
@@ -133,6 +134,8 @@ if has package; then
         --companion-sdk 0x08050001 --file-name eboot.elf > "$work/convert.log" 2>&1
     "$native" self --sign --in "$work/eboot.elf" --out "$app/eboot.bin" --magic 0x1D3D154F > "$work/sign.log" 2>&1
     cp "$VK/runtime/libc.prx" "$app/sce_module/libc.prx"
+    # every libc import must be in the PS5's libc module: one that isn't jumps to an unmapped address when called
+    python3 "$ROOT/tools/check_imports.py" "$app/eboot.bin" "$app/sce_module/libc.prx" "$work/imports.txt"
     for f in "$app/eboot.bin" "$app/sce_module/libc.prx"; do
         "$native" self --inspect --file "$f" | grep -q "integrity: valid" || { echo "package: $f is not a valid fake SELF"; exit 1; }
     done

@@ -168,3 +168,46 @@ char *realpath(const char *restrict path, char *restrict resolved) {
     memcpy(resolved, out, len + 1);
     return resolved;
 }
+
+/* getcwd: like realpath, not in the PS5's libc module (the 0.1.2 crash, in std::filesystem::current_path). The
+ * working directory is tracked here instead: every chdir goes through __wrap_chdir (--wrap=chdir), which keeps the
+ * absolute path it moved to. The app starts in its own folder (/app0). */
+static char rc_cwd[PATH_MAX] = "/app0";
+
+int __real_chdir(const char *path);
+
+int __wrap_chdir(const char *path) {
+    if (!path || !*path) {
+        errno = ENOENT;
+        return -1;
+    }
+    char resolved[PATH_MAX];
+    if (!realpath(path, resolved)) return -1; /* also: it must exist */
+    int rc = __real_chdir(resolved);
+    if (rc == 0) strcpy(rc_cwd, resolved);
+    return rc;
+}
+
+char *getcwd(char *buf, size_t size) {
+    size_t len = strlen(rc_cwd);
+    if (!buf) {
+        size_t want = size ? size : len + 1;
+        if (want < len + 1) {
+            errno = ERANGE;
+            return NULL;
+        }
+        buf = malloc(want);
+        if (!buf) {
+            errno = ENOMEM;
+            return NULL;
+        }
+    } else if (size == 0) {
+        errno = EINVAL;
+        return NULL;
+    } else if (size < len + 1) {
+        errno = ERANGE;
+        return NULL;
+    }
+    memcpy(buf, rc_cwd, len + 1);
+    return buf;
+}
