@@ -1,0 +1,21 @@
+reColossus (PPSA99071): Shadow of the Colossus (PS2, USA) statically recompiled for the PS5
+
+An unofficial fan project, not affiliated with or endorsed by Sony Interactive Entertainment or Team Ico. It contains
+none of the game's files: they are read from the player's own disc image. The game's program in it is recompiled from
+the USA release's boot ELF (SCUS_974.72) and its code modules (KERNEL.XFF, MANAGER.XFF, GAMECORE.XFF).
+
+What is in the app, and under which terms
+
+- reColossus's own code, the PS5 host (ps5/: the app's entry, the first start, the raylib subset on VideoOut, ScePad
+  and SceAudioOut) and its changes to Celosia: GPL-3.0 (reColossus-GPL-3.0.txt). The first start's screen, the
+  program's entry and the C library replacements come from reKing (GPL-3.0), which adapted them from reUndr-ps5's
+  PS5 host by bystritskiy (MIT, reUndr-MIT.txt).
+- Celosia by HenryKun55 (the Shadow of the Colossus port: its pipeline, runtime changes, native renderer and
+  hand-written functions) and PS2Recomp by ran-j and its contributors (the recompiler and runtime): GPL-3.0
+  (reColossus-GPL-3.0.txt).
+- raylib's default font (zlib/libpng licence, raylib-zlib.txt), zlib (zlib licence, zlib.txt).
+- RADV from Mesa (MIT and others, Mesa-license.rst), built with PS5_Vulkan's recipe, which with its native link
+  recipe and the PS5 Platform library from the PS5_PayloadSDK fork is GPL-3.0-or-later (PS5_Vulkan-LICENSE.txt,
+  PS5_PayloadSDK-LICENSE.txt). The combined executable is therefore subject to the GPL-3.0-or-later.
+
+The game, its assets and the code generated from it belong to their owners and are not covered by any licence here.

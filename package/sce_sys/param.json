@@ -1,0 +1,25 @@
+{
+  "titleId": "PPSA99071",
+  "contentId": "UP9000-PPSA99071_00-SOTCPS2RECOMP001",
+  "conceptId": "99071",
+  "contentVersion": "01.000.001",
+  "masterVersion": "01.00",
+  "applicationCategoryType": 0,
+  "applicationDrmType": "free",
+  "attribute": 0,
+  "attribute2": 0,
+  "attribute3": 524352,
+  "ageLevel": {
+    "default": 0
+  },
+  "contentBadgeType": 1,
+  "downloadDataSize": 256,
+  "requiredSystemSoftwareVersion": "0x0000000000000000",
+  "sdkVersion": "0x0000000000000000",
+  "localizedParameters": {
+    "defaultLanguage": "en-US",
+    "en-US": {
+      "titleName": "reColossus"
+    }
+  }
+}

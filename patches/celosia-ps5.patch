@@ -1,0 +1,119 @@
+diff -ruN a/PS2Recomp/ps2xRuntime/CMakeLists.txt b/PS2Recomp/ps2xRuntime/CMakeLists.txt
+--- a/PS2Recomp/ps2xRuntime/CMakeLists.txt	2026-11-10 23:00:11.658167701 -0300
++++ b/PS2Recomp/ps2xRuntime/CMakeLists.txt	2026-11-10 23:00:45.382912776 -0300
+@@ -64,6 +64,18 @@
+     set(PS2X_IS_ANDROID ON)
+ endif()
+ 
++# reColossus: the PS5 (homebrew PayloadSDK toolchain, reUndr-ps5's ps5.cmake). The raylib subset the runtime uses is
++# implemented by the PS5 host (PS2X_PS5_DIR/raylib); ps2EntryRunner is a static library the PS5 host links.
++option(PS2X_PS5 "Build the runtime for the PS5 (reColossus)" OFF)
++set(PS2X_PS5_DIR "" CACHE PATH "reColossus's ps5 folder (the PS5 host and its raylib subset)")
++set(PS2X_IS_PS5 OFF)
++if(PS2X_PS5)
++    set(PS2X_IS_PS5 ON)
++    if(NOT EXISTS "${PS2X_PS5_DIR}/raylib/raylib.h")
++        message(FATAL_ERROR "PS2X_PS5_DIR must point at reColossus's ps5 folder")
++    endif()
++endif()
++
+ option(PS2X_VITA_CREATE_PACKAGE "Create Vita eboot/vpk targets" ON)
+ set(PS2X_VITA_APP_NAME "PS2 Retro X" CACHE STRING "Display name for the Vita bubble")
+ set(PS2X_VITA_TITLEID "RANJ00001" CACHE STRING "9-character Vita title id")
+@@ -82,6 +94,9 @@
+     endif()
+ 
+     include("${PS2X_VITASDK}/share/vita.cmake" REQUIRED)
++elseif(PS2X_IS_PS5)
++    # no raylib, no Dear ImGui: the PS5 host draws the picture itself
++    set(PS2X_ENABLE_DEBUG_UI OFF CACHE BOOL "" FORCE)
+ else()
+     include(FetchContent)
+     set(FETCHCONTENT_QUIET FALSE)
+@@ -158,7 +173,16 @@
+ 
+ option(PS2X_VITA_SDL2_SHIM "Vita: implement the raylib subset on SDL2/GXM (platform/vita/raylib) instead of raylib-vita + PVR GLES" ON)
+ 
+-if(PS2X_IS_VITA AND PS2X_VITA_SDL2_SHIM)
++if(PS2X_IS_PS5)
++    # reColossus's PS5 host: the raylib subset (VideoOut, ScePad, SceAudioOut), the app's entry, the first start
++    file(GLOB PS2X_PS5_SOURCES CONFIGURE_DEPENDS "${PS2X_PS5_DIR}/*.cpp" "${PS2X_PS5_DIR}/*.c" "${PS2X_PS5_DIR}/raylib/*.cpp")
++    enable_language(C)
++    add_library(ps2x_ps5_host STATIC ${PS2X_PS5_SOURCES})
++    target_include_directories(ps2x_ps5_host PUBLIC "${PS2X_PS5_DIR}/raylib" "${PS2X_PS5_DIR}/..")
++    target_compile_definitions(ps2x_ps5_host PUBLIC PLATFORM_PS5=1 PS2X_PS5=1)
++    target_compile_definitions(ps2_host_backend INTERFACE PLATFORM_PS5=1 PS2X_PS5=1)
++    target_include_directories(ps2_host_backend INTERFACE "${PS2X_PS5_DIR}/raylib")
++elseif(PS2X_IS_VITA AND PS2X_VITA_SDL2_SHIM)
+     # Video through vitaGL (GXM), audio through SDL2: no PowerVR GLES modules
+     # (which Vita3K cannot run).
+     set(PS2X_VITA_PREFIX "${PS2X_VITASDK}/arm-vita-eabi")
+@@ -292,7 +316,7 @@
+     endif()
+ endif()
+ 
+-if(PS2X_IS_ANDROID)
++if(PS2X_IS_ANDROID OR PS2X_IS_PS5)
+     set(PS2X_ENABLE_FFMPEG_DEFAULT OFF)
+ else()
+     set(PS2X_ENABLE_FFMPEG_DEFAULT ON)
+@@ -534,6 +558,16 @@
+     )
+ 
+     target_link_options(ps2EntryRunner PRIVATE "-Wl,--undefined=ANativeActivity_onCreate")
++elseif(PS2X_IS_PS5)
++    # linked into the app by reColossus's build-ps5.sh (the PS5 link recipe), with the PS5 host
++    add_library(ps2EntryRunner STATIC
++        ${RUNNER_SRC_FILES}
++    )
++    # the runtime's main() is the PS5 host's to call (ps5/main_ps5.cpp), after the first start
++    foreach(PS2X_MAIN IN ITEMS "${RUNNER_MAIN_CPP}" "${ROOT_MAIN_CPP}")
++        set_source_files_properties("${PS2X_MAIN}" PROPERTIES COMPILE_DEFINITIONS "main=ps2x_main"
++                                    SKIP_UNITY_BUILD_INCLUSION ON SKIP_PRECOMPILE_HEADERS ON)
++    endforeach()
+ else()
+     add_executable(ps2EntryRunner
+         ${RUNNER_SRC_FILES}
+diff -ruN a/PS2Recomp/ps2xRuntime/cmake/ReleaseMode.cmake b/PS2Recomp/ps2xRuntime/cmake/ReleaseMode.cmake
+--- a/PS2Recomp/ps2xRuntime/cmake/ReleaseMode.cmake	2026-11-10 23:00:11.665474481 -0300
++++ b/PS2Recomp/ps2xRuntime/cmake/ReleaseMode.cmake	2026-11-10 23:00:52.086913175 -0300
+@@ -35,7 +35,8 @@
+     endif()
+ 
+     # Vita: LTO over the whole recompiled game is too slow and memory hungry.
+-    if(IPO_SUPPORTED AND NOT PS2X_IS_VITA)
++    # The PS5: the objects go to prospero-lld as they are (no LTO).
++    if(IPO_SUPPORTED AND NOT PS2X_IS_VITA AND NOT PS2X_IS_PS5)
+         set_property(TARGET ${TargetName} PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+     else()
+         message(WARNING "Interprocedural optimization not supported: ${ipo_error}")
+diff -ruN a/PS2Recomp/ps2xRuntime/src/lib/ps2_audio.cpp b/PS2Recomp/ps2xRuntime/src/lib/ps2_audio.cpp
+--- a/PS2Recomp/ps2xRuntime/src/lib/ps2_audio.cpp	2026-11-10 23:00:11.672781753 -0300
++++ b/PS2Recomp/ps2xRuntime/src/lib/ps2_audio.cpp	2026-11-10 23:00:54.054958468 -0300
+@@ -228,7 +228,7 @@
+ 
+ void PS2AudioBackend::pruneFinishedSounds()
+ {
+-#if defined(PLATFORM_VITA)
++#if defined(PLATFORM_VITA) || defined(PLATFORM_PS5)
+     return;
+ #else
+     auto &sounds = m_impl->activeSounds;
+@@ -251,7 +251,7 @@
+ void PS2AudioBackend::playDecodedSample(uint32_t sampleKey, DecodedSample &sample, float pitch, float volume,
+                                         bool isBgm)
+ {
+-#if defined(PLATFORM_VITA)
++#if defined(PLATFORM_VITA) || defined(PLATFORM_PS5)
+     (void)sampleKey;
+     (void)sample;
+     (void)pitch;
+@@ -315,7 +315,7 @@
+ void PS2AudioBackend::stopAll()
+ {
+     std::lock_guard<std::mutex> lock(m_mutex);
+-#if defined(PLATFORM_VITA)
++#if defined(PLATFORM_VITA) || defined(PLATFORM_PS5)
+     return;
+ #else
+     for (auto &t : m_impl->activeSounds)

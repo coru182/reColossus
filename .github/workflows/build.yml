@@ -1,0 +1,141 @@
+# Builds the app on GitHub and puts it in a release (README.md, "Building on GitHub").
+# The disc image comes from a release of the private repository named by SOC_REPO, read with the repository secret
+# SOC_FILES_TOKEN; it is never stored in this repository. The C++ recompiled from it is kept between runs in the same
+# private repository (its release "generated"), so later runs skip the pipeline; this repository's caches only ever
+# hold the PS5 toolchain, which holds nothing from the game.
+name: Build reColossus
+
+on:
+  workflow_dispatch:
+    inputs:
+      toolchain_only:
+        description: Only the PS5 toolchain (prepares it for later runs; no disc needed)
+        type: boolean
+        default: false
+      regenerate:
+        description: Recompile the game's code from the disc again (ignore the one kept from an earlier run)
+        type: boolean
+        default: false
+      publish:
+        description: Publish the release straight away as the latest (otherwise a draft only you see)
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-recolossus
+  cancel-in-progress: false
+
+env:
+  SOC_REPO: coru182/soc-files
+  SOC_DISC_TAG: v0
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build cmake clang-18 lld-18 llvm-18 llvm-18-dev zlib1g-dev patch zip unzip \
+            libarchive-tools pkg-config xvfb xauth libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+            libgl1-mesa-dev libgl1-mesa-dri libasound2-dev libwayland-dev libxkbcommon-dev wayland-protocols
+          echo "JOBS=$(nproc)" >> "$GITHUB_ENV"
+
+      - name: Toolchain version
+        id: pin
+        run: echo "reundr=$(sed -n 's/^REUNDR_REV=\([0-9a-f]*\).*/\1/p' setup.sh)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the PS5 toolchain
+        id: toolchain
+        uses: actions/cache/restore@v4
+        with:
+          path: deps/reUndr-ps5
+          key: ps5-toolchain-${{ steps.pin.outputs.reundr }}-v1
+
+      # As root, as reUndr-ps5's build expects (its Docker container's git refuses a checkout another user owns), then
+      # the files go back to the runner's user (reKing's workflow does the same)
+      - name: Build the PS5 toolchain (reUndr-ps5's pinned build, the first time only)
+        if: steps.toolchain.outputs.cache-hit != 'true'
+        run: |
+          sudo --preserve-env=JOBS ./setup.sh --toolchain
+          sudo chown -R "$(id -u):$(id -g)" deps
+
+      - name: Keep the PS5 toolchain for later runs
+        if: steps.toolchain.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: deps/reUndr-ps5
+          key: ${{ steps.toolchain.outputs.cache-primary-key }}
+
+      - name: The game's code (kept from an earlier run, or recompiled from the disc)
+        if: ${{ !inputs.toolchain_only }}
+        env:
+          GH_TOKEN: ${{ secrets.SOC_FILES_TOKEN }}
+          REGENERATE: ${{ inputs.regenerate }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::Add the repository secret SOC_FILES_TOKEN: a token that reads and writes $SOC_REPO (README.md, Building on GitHub)"
+            exit 1
+          fi
+          key=$(tools/bundle.sh key)
+          bundle="$RUNNER_TEMP/gen/gen-$key.tar.gz"
+          mkdir -p "$RUNNER_TEMP/gen" "$RUNNER_TEMP/disc"
+          if [ "$REGENERATE" != true ] &&
+             gh release download generated --repo "$SOC_REPO" --pattern "gen-$key.tar.gz" -D "$RUNNER_TEMP/gen" 2>/dev/null; then
+            echo "The game's code from an earlier run (gen-$key)"
+            ./setup.sh --generated "$bundle"
+            exit 0
+          fi
+          gh release download "$SOC_DISC_TAG" --repo "$SOC_REPO" -D "$RUNNER_TEMP/disc"
+          disc=$(find "$RUNNER_TEMP/disc" -maxdepth 1 -type f \( -iname '*.iso' -o -iname '*.zip' \) | head -1)
+          [ -n "$disc" ] || { echo "::error::No .iso or .zip in $SOC_REPO's release $SOC_DISC_TAG"; exit 1; }
+          ./setup.sh "$disc"
+          rm -rf "$RUNNER_TEMP/disc"
+          tools/bundle.sh pack "$bundle"
+          gh release view generated --repo "$SOC_REPO" > /dev/null 2>&1 ||
+            gh release create generated --repo "$SOC_REPO" --title "reColossus: recompiled code" \
+              --notes "Made by reColossus's workflow from the disc image in $SOC_DISC_TAG. Private: it is code from the game."
+          gh release upload generated "$bundle" --repo "$SOC_REPO" --clobber
+
+      - name: Build the app
+        if: ${{ !inputs.toolchain_only }}
+        run: ./build-ps5.sh
+
+      - name: Release
+        if: ${{ !inputs.toolchain_only }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          version=$(sed -n 's/^VERSION=//p' build-ps5.sh)
+          zip=build-ps5/PPSA99071-$version.zip
+          if gh release view "v$version" > /dev/null 2>&1; then
+            gh release upload "v$version" "$zip" --clobber
+            echo "The app replaced the one in release v$version"
+          else
+            draft=--draft
+            [ "$PUBLISH" = true ] && draft=--latest
+            gh release create "v$version" "$zip" $draft --target "$GITHUB_SHA" --title "reColossus $version" \
+              --notes-file .github/release-notes.md
+          fi
+          if [ "$PUBLISH" = true ]; then
+            gh release edit "v$version" --draft=false --latest
+          fi
+
+      - name: The logs of the pipeline
+        if: failure() && !inputs.toolchain_only
+        run: |
+          for f in work/celosia/logs/*.log build-ps5/configure.log build-ps5/link/link.log; do [ -f "$f" ] && { echo "::group::$f"; tail -60 "$f"; echo "::endgroup::"; }; done
+          true

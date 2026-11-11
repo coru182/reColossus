@@ -1,0 +1,7 @@
+/deps/
+/work/
+/build-ps5/
+/art/
+*.iso
+*.zip
+*.tar.gz
