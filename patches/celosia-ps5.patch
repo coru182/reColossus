@@ -1,6 +1,6 @@
 diff -ruN a/PS2Recomp/ps2xRuntime/CMakeLists.txt b/PS2Recomp/ps2xRuntime/CMakeLists.txt
 --- a/PS2Recomp/ps2xRuntime/CMakeLists.txt	2026-11-10 23:40:58.160185515 -0300
-+++ b/PS2Recomp/ps2xRuntime/CMakeLists.txt	2026-11-10 23:41:14.954221968 -0300
++++ b/PS2Recomp/ps2xRuntime/CMakeLists.txt	2026-11-11 13:47:10.706020184 -0300
 @@ -64,6 +64,18 @@
      set(PS2X_IS_ANDROID ON)
  endif()
@@ -57,7 +57,22 @@ diff -ruN a/PS2Recomp/ps2xRuntime/CMakeLists.txt b/PS2Recomp/ps2xRuntime/CMakeLi
      set(PS2X_ENABLE_FFMPEG_DEFAULT OFF)
  else()
      set(PS2X_ENABLE_FFMPEG_DEFAULT ON)
-@@ -541,6 +565,16 @@
+@@ -458,6 +482,14 @@
+ # Native renderer: the front picks Metal (macOS) or OpenGL (macOS with
+ # SOTC_NATIVE_GL=1, the Vita through vitaGL).
+ target_sources(ps2_runtime PRIVATE src/lib/native/native_renderer.cpp src/lib/native/native_renderer_gl.cpp)
++if(PS2X_IS_PS5)
++    # reColossus: the native renderer on Vulkan (RADV, linked into the app); its shaders' SPIR-V comes from
++    # tools/spirv.sh (native_vk_spirv.h, on the compile flags' include path)
++    set(PS2X_PS5_VULKAN_INCLUDE "" CACHE PATH "Vulkan headers (reUndr-ps5's PS5_Mesa/include)")
++    target_sources(ps2_runtime PRIVATE "${PS2X_PS5_DIR}/vk/native_renderer_vk.cpp")
++    set_source_files_properties("${PS2X_PS5_DIR}/vk/native_renderer_vk.cpp" PROPERTIES SKIP_PRECOMPILE_HEADERS ON SKIP_UNITY_BUILD_INCLUSION ON)
++    target_include_directories(ps2_runtime PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/lib/native" "${PS2X_PS5_VULKAN_INCLUDE}")
++endif()
+ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT ANDROID)
+     find_package(OpenGL REQUIRED)
+     target_link_libraries(ps2_runtime PUBLIC OpenGL::GL glfw)
+@@ -541,6 +573,16 @@
      )
  
      target_link_options(ps2EntryRunner PRIVATE "-Wl,--undefined=ANativeActivity_onCreate")
@@ -109,6 +124,79 @@ diff -ruN a/PS2Recomp/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp b/PS2Recomp/ps2x
      snapshotBackend.Initialize(snapshot.data(), static_cast<uint32_t>(snapshot.size()));
      PresentationFrame frame = snapshotBackend.PresentFromLocalMemory(request);
      // A game override drawing natively (runtime/native_renderer.h) shows its picture instead.
+diff -ruN a/PS2Recomp/ps2xRuntime/src/lib/native/native_renderer.cpp b/PS2Recomp/ps2xRuntime/src/lib/native/native_renderer.cpp
+--- a/PS2Recomp/ps2xRuntime/src/lib/native/native_renderer.cpp	2026-11-11 13:46:58.497215577 -0300
++++ b/PS2Recomp/ps2xRuntime/src/lib/native/native_renderer.cpp	2026-11-11 13:47:25.770131830 -0300
+@@ -33,6 +33,9 @@
+ 
+ namespace native_renderer::detail
+ {
++#if defined(PLATFORM_PS5)
++    Backend *createVkBackend(); // reColossus: ps5/vk/native_renderer_vk.cpp
++#endif
+ #if !defined(PS2X_HAVE_METAL)
+     Backend *createMetalBackend() { return nullptr; }
+ #endif
+@@ -66,6 +69,13 @@
+         d.holdIncomplete = true;
+         d.warmShaders = true;
+ #endif
++#if defined(PLATFORM_PS5)
++        // reColossus: the Vulkan renderer draws (and waits for the GPU) on its own thread while the game makes the
++        // next frame; textures and meshes built on a worker (the PS5 has cores to spare).
++        d.renderThread = true;
++        d.asyncBuilds = true;
++        d.holdIncomplete = true;
++#endif
+         return d;
+     }
+ 
+@@ -668,7 +678,9 @@
+ 
+     bool wantGl()
+     {
+-#if defined(__vita__) || (defined(__linux__) && !defined(__ANDROID__))
++#if defined(__vita__) || (defined(__linux__) && !defined(__ANDROID__)) || defined(PLATFORM_PS5) // PS5: Vulkan, the GL backend's port
++        return true;
++#elif 0
+         return true;
+ #else
+         const char *gl = std::getenv("SOTC_NATIVE_GL");
+@@ -684,6 +696,12 @@
+         if (!g_tried)
+         {
+             g_tried = true;
++#if defined(PLATFORM_PS5)
++            // reColossus: the Vulkan backend draws on a thread of its own, made here
++            g_backend = native_renderer::detail::createVkBackend();
++            std::cerr << "[native] Vulkan renderer " << (g_backend ? "up" : "failed") << std::endl;
++            return g_backend;
++#endif
+             if (wantGl() && g_glMakeCurrent)
+             {
+                 g_backend = native_renderer::detail::createGlBackend(g_glMakeCurrent);
+@@ -711,7 +729,11 @@
+ 
+ namespace native_renderer
+ {
++#if defined(PLATFORM_PS5)
++    const char *backendName() { return "Vulkan"; }
++#else
+     const char *backendName() { return wantGl() ? "OpenGL" : "Metal"; }
++#endif
+     bool inEmulator() { return detail::g_inEmulator.load(std::memory_order_relaxed); }
+     bool tuningApplies(const TuningItem &item) { return (item.backends & (wantGl() ? 2u : 1u)) != 0u; }
+ 
+@@ -727,6 +749,9 @@
+ 
+     bool available()
+     {
++#if defined(PLATFORM_PS5)
++        return backend() != nullptr; // made by the first call (its own render thread: any thread may ask)
++#endif
+         if (!g_tried && wantGl())
+             return static_cast<bool>(g_glMakeCurrent); // not created here: this may not be the game thread
+         return backend() != nullptr;
 diff -ruN a/PS2Recomp/ps2xRuntime/src/lib/ps2_audio.cpp b/PS2Recomp/ps2xRuntime/src/lib/ps2_audio.cpp
 --- a/PS2Recomp/ps2xRuntime/src/lib/ps2_audio.cpp	2026-11-10 23:40:58.178308489 -0300
 +++ b/PS2Recomp/ps2xRuntime/src/lib/ps2_audio.cpp	2026-11-10 23:41:14.954350608 -0300

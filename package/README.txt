@@ -1,12 +1,14 @@
-reColossus 0.1.5 - Shadow of the Colossus (PS2, USA) on a PS5 that runs homebrew
+reColossus 0.2.0 - Shadow of the Colossus (PS2, USA) on a PS5 that runs homebrew
 ================================================================================
 
 The PS2 game's code, translated into C++ ahead of time (Celosia's static recompilation with PS2Recomp) and compiled
 for the PS5. It is not an emulator of the PS2's processor; the PS2's other hardware (graphics synthesizer, sound,
 IOP) is reimplemented by PS2Recomp's runtime. Bring your own game: the app contains none of the game's files.
 
-This is an early build (0.1.x): the picture is drawn by the PS2 graphics chip's software reimplementation on the
-CPU, at the PS2's own resolution, scaled to 1080p. Expect it to run slower than on a PS2 in heavy scenes.
+The game's models are drawn by the PS5's GPU (Celosia's native renderer, here on Vulkan): the PS2's vector unit and
+graphics chip are not emulated for them. 0.2.0 is the first build that does this: the picture is drawn at the PS2's
+own resolution (512 x 448) and scaled to 1080p. Something drawn wrong? RECOLOSSUS_EMULATED_GS=1 in env.txt goes
+back to the emulated graphics chip of 0.1.x (slow, but as the PS2 drew it).
 
 INSTALL
 1. Copy the PPSA99071 folder to /data/homebrew/ on the console (ShadowMountPlus registers it: the reColossus
@@ -29,7 +31,9 @@ YOUR FILES
 /data/sotc/logs/            logs, only while the file /data/sotc/logging-on exists
 
 SETTINGS (env.txt)
-PS2X_GS_THREADS=n        threads that draw the PS2's graphics (default: the runtime's choice)
+RECOLOSSUS_EMULATED_GS=1 the PS2's graphics chip emulated instead of the native renderer (slow)
+SOTC_RENDER_SCALE=n      the native renderer's picture at 512 x 448 times n (1 to 4; default 1)
+PS2X_GS_THREADS=n        threads that draw the PS2's graphics when it is emulated (default 8)
 RECOLOSSUS_DRAW_THREADS=n  threads that scale the picture to the screen (0 to 7, default 3)
 PS2X_NO_SPU2_AUDIO=1     no sound
 Any other setting of Celosia's runtime (its README) works the same way.

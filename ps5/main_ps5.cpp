@@ -477,7 +477,7 @@ namespace
 int main(int, char **)
 {
     scePthreadSetaffinity((unsigned long)pthread_self(), 0x1fff); // the cores a title may use
-    for (const char *sub : {"", "/logs", "/memcards"})
+    for (const char *sub : {"", "/logs", "/memcards", "/shadercache"})
     {
         std::string d = kData.string() + sub;
         mkdir(d.c_str(), 0777);
@@ -502,6 +502,10 @@ int main(int, char **)
 
     // the runtime's settings: the memory cards beside the app's data, then the player's own (env.txt)
     setenv("PS2X_MEMCARD_DIR", (kData / "memcards").c_str(), 0);
+    // Mesa's shader cache (the Vulkan renderer's GPU code kept between runs), in a folder the app can write: as
+    // reKing does (its 0.1.0 crashed at device creation over the cache's mmap)
+    setenv("MESA_SHADER_CACHE_DIR", (kData / "shadercache/mesa").c_str(), 0);
+    setenv("XDG_CACHE_HOME", (kData / "shadercache").c_str(), 0);
     LoadEnv();
     // The GS rasterizer's worker threads: the runtime takes hardware_concurrency() - 2, and on the console that
     // count isn't the cores a title has (0.1.3 ran at 3 fps). A PS5 title has 13 hardware threads (7 cores); the
@@ -517,7 +521,13 @@ int main(int, char **)
         // compiled into a later build
         mkdir((kData / "vu1").c_str(), 0777);
         setenv("PS2X_VU1_DUMP_MISSING", (kData / "vu1").c_str(), 0);
+        // the native renderer (Vulkan): where each frame's time goes, every 60 frames and for each slow one, and
+        // what its textures and meshes hold, every 5 s
+        setenv("SOTC_FRAME_LOG", "1", 0);
+        setenv("SOTC_GL_MEM_LOG", "1", 0);
     }
+    // RECOLOSSUS_EMULATED_GS=1 (env.txt): the PS2's graphics chip emulated as in 0.1.x instead of the native renderer
+    Log("renderer: %s", getenv("RECOLOSSUS_EMULATED_GS") ? "the emulated GS (RECOLOSSUS_EMULATED_GS)" : "native, on Vulkan");
 
     fs::path game;
     if (!FindGame(game))

@@ -3,7 +3,8 @@
 #   work/celosia   Celosia with patches/ applied: PS2Recomp's runtime and IOP, the game's own C++ (game/overrides), and
 #                  build/runner + build/vu1rec, the C++ recompiled from the player's own disc
 #   ps5/           the PS5 host: the app's entry and first start, and the raylib subset the runtime draws, reads the
-#                  controller and plays its sound through (VideoOut, ScePad, SceAudioOut)
+#                  controller and plays its sound through (VideoOut, ScePad, SceAudioOut); ps5/vk: the game's native
+#                  renderer on Vulkan (RADV), built into the runtime, its shaders compiled by tools/spirv.sh
 #   package/       what the app carries besides the program: sce_sys (param.json, icon), licences, README.txt
 #   deps/          zlib, and reUndr-ps5's PS5 toolchain (PayloadSDK, RADV, the packaging tool)
 # Stages: ./build-ps5.sh [compile] [link] [package]  (all three when none is named). JOBS=<n> compiles n at a time.
@@ -18,7 +19,7 @@ VK=$REUNDR/build/deps/PS5_Vulkan
 SDK=$VK/.deps/native/ps5-payload-sdk
 OUT=$ROOT/build-ps5
 TITLE=PPSA99071
-VERSION=0.1.5
+VERSION=0.2.0
 JOBS=${JOBS:-$(nproc)}
 export PATH=/usr/lib/llvm-18/bin:$PATH
 STAGES=("$@"); [ ${#STAGES[@]} -gt 0 ] || STAGES=(compile link package)
@@ -44,11 +45,25 @@ if has compile; then
             -DCMAKE_C_FLAGS_RELEASE="-O2 -DNDEBUG -ffunction-sections -fdata-sections" -DZLIB_BUILD_EXAMPLES=OFF > /dev/null
         cmake --build "$OUT/zlib" --target zlibstatic -j "$JOBS"
     fi
+    # the Vulkan renderer's shaders (SPIR-V, native_vk_spirv.h) and the Vulkan headers: reUndr's Mesa's, else this
+    # machine's (libvulkan-dev; headers only, copied apart so that no other host header is on the PS5's include path)
+    "$ROOT/tools/spirv.sh" "$OUT/gen"
+    VKINC=""
+    for d in "$REUNDR/build/deps/PS5_Mesa/include" "$VK/.deps/work/radv-src/include"; do
+        [ -f "$d/vulkan/vulkan_core.h" ] && { VKINC=$d; break; }
+    done
+    if [ -z "$VKINC" ]; then
+        [ -f /usr/include/vulkan/vulkan_core.h ] || { echo "compile: no Vulkan headers (apt install libvulkan-dev)"; exit 1; }
+        rm -rf "$OUT/vkinclude" && mkdir -p "$OUT/vkinclude" && cp -r /usr/include/vulkan "$OUT/vkinclude/"
+        [ -d /usr/include/vk_video ] && cp -r /usr/include/vk_video "$OUT/vkinclude/"
+        VKINC=$OUT/vkinclude
+    fi
+    echo "compile: Vulkan headers from $VKINC"
     # PS2Recomp's runtime, IOP and the game (ps2EntryRunner), and the PS5 host: static libraries the link takes
     cmake -S "$C/PS2Recomp" -B "$OUT/cmake" -G Ninja "${TOOLCHAIN[@]}" -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_CXX_FLAGS_RELEASE="$FLAGS -I$OUT/gen -DRECOLOSSUS_VERSION_RAW=$VERSION" \
         -DCMAKE_C_FLAGS_RELEASE="-O2 -DNDEBUG -march=znver2 -ffunction-sections -fdata-sections" \
-        -DPS2X_PS5=ON -DPS2X_PS5_DIR="$ROOT/ps5" \
+        -DPS2X_PS5=ON -DPS2X_PS5_DIR="$ROOT/ps5" -DPS2X_PS5_VULKAN_INCLUDE="$VKINC" \
         -DPS2X_BUILD_RECOMP=OFF -DPS2X_BUILD_ANALYZER=OFF -DPS2X_BUILD_TEST=OFF -DPS2X_BUILD_STUDIO=OFF \
         -DPS2X_ENABLE_DEBUG_UI=OFF -DPS2X_ENABLE_FFMPEG=OFF -DPS2X_ENABLE_AGRESSIVE_LOGS=OFF \
         -DPS2X_ENABLE_IOP_RPC_TRACE=OFF -DPS2X_ENABLE_CCACHE=OFF -DPS2X_ENABLE_SCCACHE=OFF \

@@ -15,9 +15,10 @@
 > don't ask for or share disc images here.
 
 > [!WARNING]
-> **Early work.** 0.1 is the first PS5 build: the game's code runs natively, and the PS2's graphics are drawn by
-> PS2Recomp's software graphics synthesizer on the CPU, scaled to 1080p. The native renderer (Celosia's, which draws
-> the game's models on the GPU) comes next, on Vulkan.
+> **Early work.** The game's code runs natively, and since 0.2 its models are drawn by the PS5's GPU: Celosia's native
+> renderer, ported here to Vulkan (`ps5/vk`), at the PS2's resolution for now, scaled to 1080p. 0.1 drew the PS2's
+> graphics with PS2Recomp's software graphics synthesizer on the CPU (3-5 fps); `RECOLOSSUS_EMULATED_GS=1` in
+> `env.txt` still does.
 
 ## What it is
 
@@ -92,7 +93,8 @@ On Ubuntu 24.04 (x86-64), with Docker for the PS5 toolchain's first build:
 ```sh
 sudo apt-get install ninja-build cmake clang-18 lld-18 llvm-18 llvm-18-dev zlib1g-dev patch zip unzip \
   libarchive-tools pkg-config xvfb xauth libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
-  libgl1-mesa-dev libgl1-mesa-dri libasound2-dev libwayland-dev libxkbcommon-dev wayland-protocols
+  libgl1-mesa-dev libgl1-mesa-dri libasound2-dev libwayland-dev libxkbcommon-dev wayland-protocols \
+  glslang-tools libvulkan-dev
 ./setup.sh /path/to/your/SotC.iso     # the toolchain (once, an hour or more), then the game's code from your disc
 ./build-ps5.sh                        # build-ps5/PPSA99071-<version>.zip
 ```
@@ -123,7 +125,9 @@ The app goes to a draft release `v<version>` (published with `publish`).
 | Where | What |
 | --- | --- |
 | `ps5/` | The PS5 host: `main_ps5.cpp` (the app's entry and first start), `iso9660.c` (the disc image), `raylib/` (the raylib subset the runtime uses, on VideoOut, ScePad and SceAudioOut), and reKing's screen, entry and C library pieces |
-| `patches/` | Celosia's changes for the PS5: a PS5 target in PS2Recomp's runtime build |
+| `ps5/vk/` | The native renderer on Vulkan: `native_renderer_vk.cpp`, a pass-for-pass port of Celosia's OpenGL backend, and its shaders (the GL ones in Vulkan GLSL, compiled by `tools/spirv.sh`) |
+| `tests/` | `vk_check.sh`: the Vulkan renderer and Celosia's OpenGL one draw the same frames on Linux (Mesa's lavapipe and llvmpipe, Vulkan validation on) and their pictures are compared |
+| `patches/` | Celosia's changes for the PS5: a PS5 target in PS2Recomp's runtime build, the Vulkan renderer chosen there |
 | `setup.sh`, `build-ps5.sh` | The dependencies and the game's code; the app |
 | `tools/` | The disc's hashes the app checks, the code bundle, the icon |
 | `package/` | The app's `sce_sys`, its `README.txt` and licences |
