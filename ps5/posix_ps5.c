@@ -89,3 +89,82 @@ int __wrap_pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(
     pthread_attr_destroy(&own);
     return rc;
 }
+
+/* realpath: the PS5's libc module doesn't answer the import (the call jumps to an unmapped address: the 0.1.0 and
+ * 0.1.1 crash, from std::filesystem::relative -> weakly_canonical -> canonical in the runtime's disc index). Here
+ * without symbolic links (none on the console's data paths): the path made absolute and its . and .. resolved, and
+ * then it must exist, as POSIX's realpath requires (weakly_canonical relies on ENOENT for the part that doesn't). */
+#include <limits.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+
+char *realpath(const char *restrict path, char *restrict resolved) {
+    if (!path) {
+        errno = EINVAL;
+        return NULL;
+    }
+    if (!*path) {
+        errno = ENOENT;
+        return NULL;
+    }
+    char joined[PATH_MAX * 2];
+    if (path[0] == '/') {
+        if (strlen(path) >= sizeof joined) {
+            errno = ENAMETOOLONG;
+            return NULL;
+        }
+        strcpy(joined, path);
+    } else {
+        char cwd[PATH_MAX];
+        if (!getcwd(cwd, sizeof cwd)) return NULL;
+        if (strlen(cwd) + 1 + strlen(path) >= sizeof joined) {
+            errno = ENAMETOOLONG;
+            return NULL;
+        }
+        strcpy(joined, cwd);
+        strcat(joined, "/");
+        strcat(joined, path);
+    }
+    char out[PATH_MAX];
+    size_t len = 0;
+    out[0] = '/';
+    len = 1;
+    for (const char *p = joined; *p;) {
+        while (*p == '/') p++;
+        if (!*p) break;
+        const char *end = p;
+        while (*end && *end != '/') end++;
+        size_t n = (size_t)(end - p);
+        if (n == 1 && p[0] == '.') {
+            /* nothing */
+        } else if (n == 2 && p[0] == '.' && p[1] == '.') {
+            if (len > 1) {
+                len--;                                  /* the trailing component */
+                while (len > 1 && out[len - 1] != '/') len--;
+                if (len > 1) len--;                     /* its slash, unless it is the root's */
+            }
+        } else {
+            if (len + (len > 1) + n >= sizeof out) {
+                errno = ENAMETOOLONG;
+                return NULL;
+            }
+            if (len > 1) out[len++] = '/';
+            memcpy(out + len, p, n);
+            len += n;
+        }
+        p = end;
+    }
+    out[len] = 0;
+    struct stat st;
+    if (stat(out, &st) != 0) return NULL; /* errno from stat: ENOENT for a missing part */
+    if (!resolved) {
+        resolved = malloc(len + 1);
+        if (!resolved) {
+            errno = ENOMEM;
+            return NULL;
+        }
+    }
+    memcpy(resolved, out, len + 1);
+    return resolved;
+}
