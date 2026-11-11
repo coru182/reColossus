@@ -22,6 +22,7 @@
 #include <fstream>
 #include <iostream>
 #include <streambuf>
+#include <thread>
 #include <string>
 #include <vector>
 
@@ -502,6 +503,21 @@ int main(int, char **)
     // the runtime's settings: the memory cards beside the app's data, then the player's own (env.txt)
     setenv("PS2X_MEMCARD_DIR", (kData / "memcards").c_str(), 0);
     LoadEnv();
+    // The GS rasterizer's worker threads: the runtime takes hardware_concurrency() - 2, and on the console that
+    // count isn't the cores a title has (0.1.3 ran at 3 fps). A PS5 title has 13 hardware threads (7 cores); the
+    // game's own threads (EE, VU1, IOP, audio) take about 4 of them.
+    Log("cpu: hardware_concurrency() = %u", std::thread::hardware_concurrency());
+    setenv("PS2X_GS_THREADS", "8", 0);
+    Log("cpu: GS raster threads %s", getenv("PS2X_GS_THREADS"));
+    if (logging)
+    {
+        // with logging on: every 5 s, how busy each emulation thread is and where a frame's time goes
+        setenv("PS2X_STATS", "1", 0);
+        // the VU1 microcode the game runs that this build has no recompiled code for: logged and saved, to be
+        // compiled into a later build
+        mkdir((kData / "vu1").c_str(), 0777);
+        setenv("PS2X_VU1_DUMP_MISSING", (kData / "vu1").c_str(), 0);
+    }
 
     fs::path game;
     if (!FindGame(game))
