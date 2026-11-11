@@ -25,7 +25,9 @@ The game's MIPS code (the boot ELF and its three code modules) is translated int
 the PS5, as [reKing](https://github.com/coru182/reKing) does for The Return of the King (Xbox) and
 [reUndr](https://github.com/bystritskiy/reUndr-ps5) for Need for Speed: Underground. It is built on
 [Celosia](https://github.com/HenryKun55/celosia) by HenryKun55, the native port of Shadow of the Colossus to macOS
-and the PS Vita, and [PS2Recomp](https://github.com/ran-j/PS2Recomp) by ran-j: their pipeline recompiles the game
+and the PS Vita, in its x86-64 Linux port by GenissonEmilio
+([ShadowOfTheColossusPC](https://github.com/GenissonEmilio/ShadowOfTheColossusPC)), and
+[PS2Recomp](https://github.com/ran-j/PS2Recomp) by ran-j: their pipeline recompiles the game
 and their runtime reimplements the rest of the PS2 (graphics, sound, IOP, memory cards). reColossus adds the PS5
 host: the app's start, the first start that unpacks your disc image, and the picture, the DualSense and the sound
 through the PS5's own system libraries.
@@ -128,7 +130,9 @@ The app goes to a draft release `v<version>` (published with `publish`).
 
 ## Credits
 
-- [Celosia](https://github.com/HenryKun55/celosia) by HenryKun55: the Shadow of the Colossus port this is built on.
+- [Celosia](https://github.com/HenryKun55/celosia) by HenryKun55: the Shadow of the Colossus port this is built on,
+  through GenissonEmilio's Linux port of it ([ShadowOfTheColossusPC](https://github.com/GenissonEmilio/ShadowOfTheColossusPC)),
+  which builds on x86-64 as the PS5 needs.
 - [PS2Recomp](https://github.com/ran-j/PS2Recomp) by ran-j and its contributors: the recompiler and runtime.
 - [reUndr-ps5](https://github.com/bystritskiy/reUndr-ps5) by bystritskiy: the PS5 toolchain, link and packaging, and
   the PS5 host pieces reKing took from it.

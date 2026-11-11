@@ -6,7 +6,8 @@
 #   ./setup.sh --toolchain                  only the dependencies and the PS5 toolchain (no disc needed)
 #   ./setup.sh --generated bundle.tar.gz    the game's code from a bundle an earlier run packed (tools/bundle.sh)
 #
-# deps/        Celosia (Shadow of the Colossus on PS2Recomp), zlib, and reUndr-ps5 with its PS5 toolchain (PayloadSDK,
+# deps/        Celosia (Shadow of the Colossus on PS2Recomp), in its Linux port (x86-64: upstream Celosia now builds
+#              for ARM only: Apple silicon and the Vita), zlib, and reUndr-ps5 with its PS5 toolchain (PayloadSDK,
 #              RADV built for the PS5, the packaging tool), as reKing pins them
 # work/celosia Celosia with patches/ applied: its PS2Recomp tree builds both the Linux runner (for the pipeline) and the
 #              PS5 runtime; build/runner and build/vu1rec hold the C++ recompiled from your disc
@@ -20,7 +21,7 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 DEPS=$ROOT/deps
 WORK=$ROOT/work
-CELOSIA_REV=387452cff3193bee368040381af31ff0650eaf0a   # HenryKun55/celosia main, 2026-11-10
+CELOSIA_REV=43ea358a61a7e99553c7f15f442832ef89b7f870   # GenissonEmilio/ShadowOfTheColossusPC, 2026-10-31
 REUNDR_REV=91de6198be34c956069e9b5d9ce00aed532a73ab    # as reKing 1.0.5 pins it
 ZLIB_REV=51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf      # v1.3.1
 JOBS=${JOBS:-$(nproc)}
@@ -50,7 +51,7 @@ pin() {
         { git -C "$dir" fetch --quiet origin && git -C "$dir" checkout --quiet --detach "$3"; }
 }
 mkdir -p "$DEPS"
-pin celosia https://github.com/HenryKun55/celosia.git "$CELOSIA_REV"
+pin celosia https://github.com/GenissonEmilio/ShadowOfTheColossusPC.git "$CELOSIA_REV"
 pin zlib https://github.com/madler/zlib.git "$ZLIB_REV"
 
 # reUndr-ps5's pinned PS5 toolchain, built by its own scripts, as reKing's setup.sh does
@@ -90,8 +91,8 @@ if [ "$MODE" = --generated ]; then
 fi
 
 # Celosia's pipeline on Linux: the disc extracted into work/celosia/disc, the boot ELF and each module captured and
-# recompiled, the Linux runner built, and the VU1 microcode recorded and compiled. The flags are the ones Celosia's
-# Linux port (GenissonEmilio/ShadowOfTheColossusPC) builds with; no FFmpeg, no debug UI.
+# recompiled, the Linux runner built, and the VU1 microcode recorded and compiled. The flags are the ones the Linux
+# port builds with; no FFmpeg, no debug UI.
 for tool in bsdtar unzip pkg-config; do
     command -v "$tool" >/dev/null || { echo "setup: $tool is missing (README.md, Building)"; exit 1; }
 done

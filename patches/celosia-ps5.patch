@@ -1,6 +1,6 @@
 diff -ruN a/PS2Recomp/ps2xRuntime/CMakeLists.txt b/PS2Recomp/ps2xRuntime/CMakeLists.txt
---- a/PS2Recomp/ps2xRuntime/CMakeLists.txt	2026-11-10 23:00:11.658167701 -0300
-+++ b/PS2Recomp/ps2xRuntime/CMakeLists.txt	2026-11-10 23:00:45.382912776 -0300
+--- a/PS2Recomp/ps2xRuntime/CMakeLists.txt	2026-11-10 23:40:58.160185515 -0300
++++ b/PS2Recomp/ps2xRuntime/CMakeLists.txt	2026-11-10 23:41:14.954221968 -0300
 @@ -64,6 +64,18 @@
      set(PS2X_IS_ANDROID ON)
  endif()
@@ -30,7 +30,7 @@ diff -ruN a/PS2Recomp/ps2xRuntime/CMakeLists.txt b/PS2Recomp/ps2xRuntime/CMakeLi
  else()
      include(FetchContent)
      set(FETCHCONTENT_QUIET FALSE)
-@@ -158,7 +173,16 @@
+@@ -162,7 +177,16 @@
  
  option(PS2X_VITA_SDL2_SHIM "Vita: implement the raylib subset on SDL2/GXM (platform/vita/raylib) instead of raylib-vita + PVR GLES" ON)
  
@@ -48,7 +48,7 @@ diff -ruN a/PS2Recomp/ps2xRuntime/CMakeLists.txt b/PS2Recomp/ps2xRuntime/CMakeLi
      # Video through vitaGL (GXM), audio through SDL2: no PowerVR GLES modules
      # (which Vita3K cannot run).
      set(PS2X_VITA_PREFIX "${PS2X_VITASDK}/arm-vita-eabi")
-@@ -292,7 +316,7 @@
+@@ -296,7 +320,7 @@
      endif()
  endif()
  
@@ -57,7 +57,7 @@ diff -ruN a/PS2Recomp/ps2xRuntime/CMakeLists.txt b/PS2Recomp/ps2xRuntime/CMakeLi
      set(PS2X_ENABLE_FFMPEG_DEFAULT OFF)
  else()
      set(PS2X_ENABLE_FFMPEG_DEFAULT ON)
-@@ -534,6 +558,16 @@
+@@ -541,6 +565,16 @@
      )
  
      target_link_options(ps2EntryRunner PRIVATE "-Wl,--undefined=ANativeActivity_onCreate")
@@ -75,21 +75,20 @@ diff -ruN a/PS2Recomp/ps2xRuntime/CMakeLists.txt b/PS2Recomp/ps2xRuntime/CMakeLi
      add_executable(ps2EntryRunner
          ${RUNNER_SRC_FILES}
 diff -ruN a/PS2Recomp/ps2xRuntime/cmake/ReleaseMode.cmake b/PS2Recomp/ps2xRuntime/cmake/ReleaseMode.cmake
---- a/PS2Recomp/ps2xRuntime/cmake/ReleaseMode.cmake	2026-11-10 23:00:11.665474481 -0300
-+++ b/PS2Recomp/ps2xRuntime/cmake/ReleaseMode.cmake	2026-11-10 23:00:52.086913175 -0300
-@@ -35,7 +35,8 @@
+--- a/PS2Recomp/ps2xRuntime/cmake/ReleaseMode.cmake	2026-11-10 23:40:58.169228306 -0300
++++ b/PS2Recomp/ps2xRuntime/cmake/ReleaseMode.cmake	2026-11-10 23:41:14.954315275 -0300
+@@ -36,7 +36,7 @@
      endif()
  
      # Vita: LTO over the whole recompiled game is too slow and memory hungry.
--    if(IPO_SUPPORTED AND NOT PS2X_IS_VITA)
-+    # The PS5: the objects go to prospero-lld as they are (no LTO).
-+    if(IPO_SUPPORTED AND NOT PS2X_IS_VITA AND NOT PS2X_IS_PS5)
+-    if(PS2X_ENABLE_LTO AND IPO_SUPPORTED AND NOT PS2X_IS_VITA)
++    if(PS2X_ENABLE_LTO AND IPO_SUPPORTED AND NOT PS2X_IS_VITA AND NOT PS2X_IS_PS5)
          set_property(TARGET ${TargetName} PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
      else()
          message(WARNING "Interprocedural optimization not supported: ${ipo_error}")
 diff -ruN a/PS2Recomp/ps2xRuntime/src/lib/ps2_audio.cpp b/PS2Recomp/ps2xRuntime/src/lib/ps2_audio.cpp
---- a/PS2Recomp/ps2xRuntime/src/lib/ps2_audio.cpp	2026-11-10 23:00:11.672781753 -0300
-+++ b/PS2Recomp/ps2xRuntime/src/lib/ps2_audio.cpp	2026-11-10 23:00:54.054958468 -0300
+--- a/PS2Recomp/ps2xRuntime/src/lib/ps2_audio.cpp	2026-11-10 23:40:58.178308489 -0300
++++ b/PS2Recomp/ps2xRuntime/src/lib/ps2_audio.cpp	2026-11-10 23:41:14.954350608 -0300
 @@ -228,7 +228,7 @@
  
  void PS2AudioBackend::pruneFinishedSounds()

@@ -11,7 +11,7 @@ What is in the app, and under which terms
   program's entry and the C library replacements come from reKing (GPL-3.0), which adapted them from reUndr-ps5's
   PS5 host by bystritskiy (MIT, reUndr-MIT.txt).
 - Celosia by HenryKun55 (the Shadow of the Colossus port: its pipeline, runtime changes, native renderer and
-  hand-written functions) and PS2Recomp by ran-j and its contributors (the recompiler and runtime): GPL-3.0
+  hand-written functions), in GenissonEmilio's Linux port of it (ShadowOfTheColossusPC), and PS2Recomp by ran-j and its contributors (the recompiler and runtime): GPL-3.0
   (reColossus-GPL-3.0.txt).
 - raylib's default font (zlib/libpng licence, raylib-zlib.txt), zlib (zlib licence, zlib.txt).
 - RADV from Mesa (MIT and others, Mesa-license.rst), built with PS5_Vulkan's recipe, which with its native link
