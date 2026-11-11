@@ -110,5 +110,18 @@ fi
 export PS2X_INPUT_SCRIPT=${PS2X_INPUT_SCRIPT:-"20:DOWN:0.3;22:CROSS:0.3;30:CROSS:0.3;40:CROSS:0.3;60:CROSS:0.3;80:CROSS:0.3"}
 sed -i 's/cmd_autotest 40 >/cmd_autotest ${CELOSIA_VU1_SECONDS:-150} >/' "$C/celosia"
 (cd "$C" && "${run[@]}" ./celosia setup --iso "$ISO")
+# the VU1 microcode the scripted run recorded, and what the run printed: without it every VU1 program is interpreted
+# on the console (0.1.0 to 0.1.4 had none)
+dumps=$(ls "$C"/build/vu1/*.bin 2>/dev/null | wc -l)
+compiled=$(ls "$C"/build/vu1rec 2>/dev/null | wc -l)
+echo "setup: VU1 microcode: $dumps image(s) recorded, $compiled file(s) of recompiled code"
+if [ -f "$C/logs/autotest.log" ]; then
+    echo "setup: the scripted run's log (last lines):"
+    grep -v "^\[irq\]" "$C/logs/autotest.log" | tail -40 || true
+fi
+if [ "$compiled" -eq 0 ]; then
+    echo "setup: no VU1 microcode was recompiled (the scripted run recorded none)"
+    exit 1
+fi
 python3 "$ROOT/tools/game_hashes.py" "$C/disc" "$WORK/game_hashes.inc"
 echo "setup: done; now ./build-ps5.sh"
