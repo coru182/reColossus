@@ -18,6 +18,8 @@ int sceKernelSendNotificationRequest(int device, void *request, size_t size, int
 int sceKernelDebugOutText(int channel, const char *text);
 int sceKernelUsleep(unsigned microseconds);
 int scePthreadSetaffinity(unsigned long thread, unsigned long mask);
+int sceKernelAvailableFlexibleMemorySize(size_t *size);
+int sceKernelAvailableDirectMemorySize(int64_t start, int64_t end, size_t align, int64_t *physical, size_t *size);
 
 /* libSceVideoOut */
 typedef struct { void *address, *metadata, *reserved[2]; } SceVideoOutBuffer;

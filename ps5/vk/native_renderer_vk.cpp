@@ -1307,16 +1307,36 @@ namespace
         void render(uint32_t w, uint32_t h);
         void finishReadback();
         // The render thread's work for one frame / for uploads alone.
+        // Where the render thread's time goes (logged every 120 frames): uploads and recording, the submission
+        // and the wait for the GPU, the read-back.
+        struct
+        {
+            uint64_t frames = 0, recordUs = 0, gpuUs = 0, readbackUs = 0, worstUs = 0;
+        } timing;
         void frame(uint32_t w, uint32_t h)
         {
+            const uint64_t t0 = native_renderer::nowUs();
             if (!beginCommands())
                 return;
             applyUploads();
             if (!hold)
                 render(w, h);
+            const uint64_t t1 = native_renderer::nowUs();
             const bool ok = submitAndWait();
+            const uint64_t t2 = native_renderer::nowUs();
             if (ok && !hold)
                 finishReadback();
+            const uint64_t t3 = native_renderer::nowUs();
+            timing.recordUs += t1 - t0;
+            timing.gpuUs += t2 - t1;
+            timing.readbackUs += t3 - t2;
+            timing.worstUs = std::max(timing.worstUs, t3 - t0);
+            if (++timing.frames == 120)
+            {
+                std::fprintf(stderr, "[native:vk] 120 frames: record %.2f ms, submit and GPU %.2f ms, read back %.2f ms a frame; slowest %.1f ms\n",
+                             timing.recordUs / 120e3, timing.gpuUs / 120e3, timing.readbackUs / 120e3, timing.worstUs / 1e3);
+                timing = {};
+            }
         }
         void uploadsAlone(std::vector<Upload> &list)
         {

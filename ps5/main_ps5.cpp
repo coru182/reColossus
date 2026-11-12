@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -66,6 +67,9 @@ namespace
     }
 
     void Log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+    // With logging: a thread that asks to sleep 1 s at a time and logs, every 5 s, how much later than asked it
+    // woke at worst (the process starved of CPU time shows here first) and the flexible memory left.
+    void StartMonitor();
     void Log(const char *fmt, ...)
     {
         va_list args;
@@ -74,6 +78,31 @@ namespace
         std::vfprintf(stderr, fmt, args);
         std::fprintf(stderr, "\n");
         va_end(args);
+    }
+    void StartMonitor()
+    {
+        std::thread([]
+                    {
+            using clock = std::chrono::steady_clock;
+            double worstMs = 0.0;
+            for (int tick = 1;; ++tick)
+            {
+                const auto before = clock::now();
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+                const double late = std::chrono::duration<double, std::milli>(clock::now() - before).count() - 1000.0;
+                worstMs = std::max(worstMs, late);
+                if (tick % 5 == 0)
+                {
+                    size_t flexible = 0, direct = 0;
+                    int64_t at = 0;
+                    sceKernelAvailableFlexibleMemorySize(&flexible);
+                    sceKernelAvailableDirectMemorySize(0, (int64_t)sceKernelGetDirectMemorySize(), 0x10000, &at, &direct);
+                    Log("monitor: t=%d s, woke up to %.1f ms late, memory left: flexible %zu MB, direct (largest free) %zu MB", tick,
+                        worstMs, flexible >> 20, direct >> 20);
+                    worstMs = 0.0;
+                }
+            } })
+            .detach();
     }
 
     // name in dir, in whatever case the disc has it
@@ -525,6 +554,11 @@ int main(int, char **)
         // what its textures and meshes hold, every 5 s
         setenv("SOTC_FRAME_LOG", "1", 0);
         setenv("SOTC_GL_MEM_LOG", "1", 0);
+        // where the game's own code spends its time (the runtime's sampling profiler: pc and ra, 1000 a second,
+        // the file rewritten every 5 s), from 3 s in
+        setenv("PS2X_PROFILE", (kData / "logs/guest_profile.txt").c_str(), 0);
+        setenv("PS2X_PROFILE_START", "3", 0);
+        StartMonitor();
     }
     // The native renderer (Celosia's game overrides draw through it when SOTC_NATIVE is set: Celosia's main sets it
     // on Linux only, which the PS5 is not; 0.2.0 drew with the emulated GS for that). RECOLOSSUS_EMULATED_GS=1

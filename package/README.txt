@@ -1,4 +1,4 @@
-reColossus 0.2.1 - Shadow of the Colossus (PS2, USA) on a PS5 that runs homebrew
+reColossus 0.2.2 - Shadow of the Colossus (PS2, USA) on a PS5 that runs homebrew
 ================================================================================
 
 The PS2 game's code, translated into C++ ahead of time (Celosia's static recompilation with PS2Recomp) and compiled
