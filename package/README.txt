@@ -1,4 +1,4 @@
-reColossus 0.2.0 - Shadow of the Colossus (PS2, USA) on a PS5 that runs homebrew
+reColossus 0.2.1 - Shadow of the Colossus (PS2, USA) on a PS5 that runs homebrew
 ================================================================================
 
 The PS2 game's code, translated into C++ ahead of time (Celosia's static recompilation with PS2Recomp) and compiled
@@ -6,7 +6,7 @@ for the PS5. It is not an emulator of the PS2's processor; the PS2's other hardw
 IOP) is reimplemented by PS2Recomp's runtime. Bring your own game: the app contains none of the game's files.
 
 The game's models are drawn by the PS5's GPU (Celosia's native renderer, here on Vulkan): the PS2's vector unit and
-graphics chip are not emulated for them. 0.2.0 is the first build that does this: the picture is drawn at the PS2's
+graphics chip are not emulated for them. 0.2.1 is the first build that does this: the picture is drawn at the PS2's
 own resolution (512 x 448) and scaled to 1080p. Something drawn wrong? RECOLOSSUS_EMULATED_GS=1 in env.txt goes
 back to the emulated graphics chip of 0.1.x (slow, but as the PS2 drew it).
 

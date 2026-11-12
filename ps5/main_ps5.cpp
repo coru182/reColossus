@@ -526,8 +526,13 @@ int main(int, char **)
         setenv("SOTC_FRAME_LOG", "1", 0);
         setenv("SOTC_GL_MEM_LOG", "1", 0);
     }
-    // RECOLOSSUS_EMULATED_GS=1 (env.txt): the PS2's graphics chip emulated as in 0.1.x instead of the native renderer
-    Log("renderer: %s", getenv("RECOLOSSUS_EMULATED_GS") ? "the emulated GS (RECOLOSSUS_EMULATED_GS)" : "native, on Vulkan");
+    // The native renderer (Celosia's game overrides draw through it when SOTC_NATIVE is set: Celosia's main sets it
+    // on Linux only, which the PS5 is not; 0.2.0 drew with the emulated GS for that). RECOLOSSUS_EMULATED_GS=1
+    // (env.txt): the PS2's graphics chip emulated as in 0.1.x instead.
+    if (!getenv("RECOLOSSUS_EMULATED_GS"))
+        setenv("SOTC_NATIVE", "1", 0);
+    Log("renderer: SOTC_NATIVE=%s%s", getenv("SOTC_NATIVE") ? getenv("SOTC_NATIVE") : "(unset)",
+        getenv("SOTC_NATIVE") ? " (native, on Vulkan)" : " (the emulated GS)");
 
     fs::path game;
     if (!FindGame(game))
