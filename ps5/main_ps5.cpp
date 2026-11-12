@@ -435,15 +435,11 @@ namespace
         int fd = -1;
         if (path && (fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0666)) < 0)
             return nullptr;
-        if (fd >= 0)
-        {
-            // logging on: every line straight into the file, unbuffered, so that a crash loses none (slower: on
-            // only to find a problem)
-            FILE *stream = fdopen(fd, "w");
-            if (stream)
-                std::setvbuf(stream, nullptr, _IONBF, 0);
-            return stream;
-        }
+        // Logging on or off, the lines go through the pipe: a line is one write into memory, and the drain thread
+        // takes them to the file in blocks of up to 16 KB. (0.2.1 and 0.2.2 wrote into the file unbuffered: the
+        // PS5's libc writes a printf in pieces, each a write to /data, and the native renderer's frame log took
+        // longer to write than a frame: every frame was slow, logged a line, and the game never left the loading
+        // ring, slowing until frames took seconds.)
         int ends[2];
         if (pipe(ends) == 0)
         {
@@ -453,7 +449,7 @@ namespace
             if (FILE *stream = fdopen(ends[1], "w"); stream && pthread_create(&t, nullptr, Drain, &sink) == 0)
             {
                 pthread_detach(t);
-                std::setvbuf(stream, nullptr, _IOLBF, 0);
+                std::setvbuf(stream, nullptr, _IOLBF, 16384); // a line, however long, in one write
                 return stream;
             }
             close(ends[0]);
