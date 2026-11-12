@@ -1,0 +1,98 @@
+# Celosia's Linux runner, built from the game's code an earlier build kept (the private bundle), run for a while in the
+# native renderer's mode (or the emulated GS's) on this machine, and its timing printed: whether a problem seen on the
+# PS5 is the PS5's or the pipeline's. Only the runner's counters reach this log (frame times, loads, the memory card
+# check): no screenshots, no game files (this repository is public).
+name: Native renderer check (Linux)
+
+on:
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: How long the game runs
+        default: "150"
+      emulated:
+        description: The emulated GS instead of the native renderer (for comparison)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  SOC_REPO: coru182/soc-files
+  SOC_DISC_TAG: v0
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build cmake clang-18 lld-18 llvm-18 zlib1g-dev patch unzip libarchive-tools \
+            pkg-config xvfb xauth libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev \
+            libgl1-mesa-dri libasound2-dev libwayland-dev libxkbcommon-dev wayland-protocols mesa-utils
+
+      - name: Celosia, the game's code and the disc
+        env:
+          GH_TOKEN: ${{ secrets.SOC_FILES_TOKEN }}
+        run: |
+          rev=$(sed -n 's/^CELOSIA_REV=\([0-9a-f]*\).*/\1/p' setup.sh)
+          git clone -q https://github.com/GenissonEmilio/ShadowOfTheColossusPC.git deps/celosia
+          git -C deps/celosia checkout -q "$rev"
+          mkdir -p work/celosia
+          git -C deps/celosia archive HEAD | tar -x -C work/celosia
+          for p in patches/celosia-*.patch; do patch -s -d work/celosia -p1 < "$p"; done
+          key=$(tools/bundle.sh key)
+          mkdir -p "$RUNNER_TEMP/gen" "$RUNNER_TEMP/disc"
+          gh release download generated --repo "$SOC_REPO" --pattern "gen-*$key.tar.gz" -D "$RUNNER_TEMP/gen"
+          tar -xzf "$RUNNER_TEMP"/gen/gen-*"$key".tar.gz -C work
+          gh release download "$SOC_DISC_TAG" --repo "$SOC_REPO" -D "$RUNNER_TEMP/disc"
+          disc=$(find "$RUNNER_TEMP/disc" -maxdepth 1 -type f \( -iname '*.iso' -o -iname '*.zip' \) | head -1)
+          (cd work/celosia && ./celosia extract "$disc" > /dev/null)
+          rm -rf "$RUNNER_TEMP/disc" "$RUNNER_TEMP/gen"
+
+      - name: Build the Linux runner
+        run: |
+          C=$PWD/work/celosia
+          cmake -S "$C/PS2Recomp" -B "$C/build/cmake" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DPS2X_BUILD_STUDIO=OFF -DPS2X_BUILD_TEST=OFF -DPS2X_BUILD_ANALYZER=OFF -DPS2X_ENABLE_AGRESSIVE_LOGS=OFF \
+            "-DPS2X_RUNNER_DIRS=$C/build/runner;$C/build/vu1rec;$C/game/overrides" \
+            -DCMAKE_C_COMPILER=clang-18 -DCMAKE_CXX_COMPILER=clang++-18 -DCMAKE_CXX_FLAGS=-msse4.1 \
+            -DPS2X_ENABLE_DEBUG_UI=OFF -DPS2X_ENABLE_IOP_RPC_TRACE=OFF -DPS2X_ENABLE_FFMPEG=OFF \
+            -DPS2X_ENABLE_CCACHE=OFF -DPS2X_ENABLE_SCCACHE=OFF > configure.log 2>&1 || { tail -40 configure.log; exit 1; }
+          cmake --build "$C/build/cmake" --target ps2EntryRunner -j "$(nproc)" > build.log 2>&1 ||
+            { grep -m 30 -E "error" build.log || tail -40 build.log; exit 1; }
+
+      - name: Run the game
+        env:
+          SECONDS_TO_RUN: ${{ inputs.seconds }}
+          EMULATED: ${{ inputs.emulated }}
+        run: |
+          C=$PWD/work/celosia
+          mkdir -p "$C/logs" "$RUNNER_TEMP/memcards"
+          if [ "$EMULATED" = true ]; then export RECOLOSSUS_EMULATED_GS=1; fi
+          export PS2X_STATS=1 SOTC_FRAME_LOG=1 SOTC_GL_MEM_LOG=1 PS2X_MEMCARD_DIR="$RUNNER_TEMP/memcards"
+          export PS2X_INPUT_SCRIPT="20:DOWN:0.3;22:CROSS:0.3;30:CROSS:0.3;40:CROSS:0.3;60:CROSS:0.3;80:CROSS:0.3"
+          export PS2X_PROFILE="$C/logs/guest_profile.txt" PS2X_PROFILE_START=3
+          glxinfo -B 2>/dev/null | grep -E "renderer|version" | head -3 || true
+          (cd "$C" && timeout -s KILL "$SECONDS_TO_RUN" xvfb-run -a -s "-screen 0 1280x720x24" \
+            build/cmake/ps2xRuntime/ps2EntryRunner disc/SCUS_974.72 > "$C/logs/run.log" 2>&1) || true
+          L=$C/logs/run.log
+          echo "== the run: $(wc -l < "$L") lines"
+          grep -a -o -E "\[native[^]]*\][^[]{0,160}|\[sotc[^]]*\][^[]{0,120}|\[mc2\][^[]{0,80}|GAMECORE entered[^[]{0,40}" "$L" | head -40
+          echo "== frame summaries (every 60 frames)"
+          grep -a -o -E "\[frame\] [0-9]+: [^[]{0,260}" "$L" | head -60
+          echo "== stats"
+          grep -a -o -E "\[stats\] t=[0-9]+ gameFps=[0-9.]+ shownFps=[0-9.]+|\[load\][^[]{0,100}" "$L" | head -80
+          echo "== the guest profile: the 40 most sampled pc / ra"
+          if [ -f "$C/logs/guest_profile.txt" ]; then
+            head -2 "$C/logs/guest_profile.txt"
+            tail -n +3 "$C/logs/guest_profile.txt" | sort -k3 -n -r | head -40
+          fi
