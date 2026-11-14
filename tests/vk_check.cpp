@@ -5,6 +5,7 @@
 //   tests/vk_check.sh            builds this against the pinned Celosia tree and runs it (validation layers on)
 //   vk_check <out dir> [frames]  writes <out>/gl_<n>.ppm, vk_<n>.ppm, diff_<n>.ppm and prints the differences
 #include "native_backend.h"
+#include "runtime/host_menu.h"
 #include "runtime/native_tuning.h"
 
 #include <EGL/egl.h>
@@ -21,6 +22,16 @@ namespace native_renderer::detail
 {
     Backend *createVkBackend();
 }
+// the host's settings (host_menu.cpp, not built here): the renderer reads the screen mode
+namespace hostmenu
+{
+    Settings &settings()
+    {
+        static Settings s;
+        return s;
+    }
+}
+
 using namespace native_renderer;
 using detail::Backend;
 
@@ -508,6 +519,8 @@ int main(int argc, char **argv)
         if (!gl->latestFrame(a, aw, ah) || !vk->latestFrame(b, bw, bh) || aw != bw || ah != bh)
         {
             std::fprintf(stderr, "check: frame %d: no picture (gl %ux%u vk %ux%u)\n", f, aw, ah, bw, bh);
+            if (std::getenv("RECOLOSSUS_PRESENT"))
+                continue; // presented to a swapchain (the validation layers' check only)
             return 1;
         }
         std::vector<uint8_t> diff(a.size());

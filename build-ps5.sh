@@ -19,7 +19,7 @@ VK=$REUNDR/build/deps/PS5_Vulkan
 SDK=$VK/.deps/native/ps5-payload-sdk
 OUT=$ROOT/build-ps5
 TITLE=PPSA99071
-VERSION=0.2.3
+VERSION=0.3.0
 JOBS=${JOBS:-$(nproc)}
 export PATH=/usr/lib/llvm-18/bin:$PATH
 STAGES=("$@"); [ ${#STAGES[@]} -gt 0 ] || STAGES=(compile link package)

@@ -36,6 +36,11 @@
 // the disc it was made with): kBootElf, kKernelXff, kManagerXff, kGamecoreXff.
 #include "game_hashes.inc"
 
+namespace native_renderer
+{
+    bool available(); // Celosia's native renderer (src/lib/native/native_renderer.cpp): made by the first call
+}
+
 #define RC_STRING2(x) #x
 #define RC_STRING(x) RC_STRING2(x)
 #ifdef RECOLOSSUS_VERSION_RAW
@@ -589,6 +594,10 @@ int main(int, char **)
     Log("game: the release this build was made from");
     rc_screen_close(); // the runtime's window opens VideoOut itself
     sceSystemServiceHideSplashScreen();
+    // The Vulkan renderer up before the runtime's window: it takes the display (VK_KHR_display, 4K) when it can, and
+    // the host then draws only its overlay; else the host shows the picture at 1920x1080 as before.
+    if (getenv("SOTC_NATIVE"))
+        Log("renderer: Vulkan %s", native_renderer::available() ? "up" : "failed (the emulated GS draws)");
 
     // relative paths of the runtime (its logs, the VU1 microcode it saves) land in /data/sotc
     chdir(kData.c_str());

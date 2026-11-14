@@ -9,7 +9,7 @@ OUT=${2:?usage: tests/vk_check.sh <Celosia tree> <out dir> [frames]}
 R=$C/PS2Recomp/ps2xRuntime
 mkdir -p "$OUT/obj"
 "$ROOT/tools/spirv.sh" "$OUT/gen" > /dev/null
-FLAGS=(-std=c++20 -O1 -g -I"$R/include" -I"$R/src/lib/native" -I"$OUT/gen")
+FLAGS=(-std=c++20 -O1 -g -I"$R/include" -I"$R/src/lib/native" -I"$C/PS2Recomp/ps2xIOP/include" -I"$OUT/gen")
 for src in "$R/src/lib/native/native_renderer.cpp" "$R/src/lib/native/native_renderer_gl.cpp" "$ROOT/ps5/vk/native_renderer_vk.cpp" "$ROOT/tests/vk_check.cpp"; do
     clang++-18 "${FLAGS[@]}" -c "$src" -o "$OUT/obj/$(basename "$src" .cpp).o" &
 done

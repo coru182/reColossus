@@ -32,6 +32,7 @@
 #include <vector>
 
 #include "ps5/sys_ps5.h"
+#include "ps5/rc_screen.h"
 
 namespace
 {
@@ -128,6 +129,26 @@ namespace
     bool g_windowReady = false;
     std::vector<uint32_t> g_frame; // the host frame, 0xAARRGGBB (the scan-out's B8G8R8A8 in memory)
 
+    // The GPU's screen (rc_screen_gpu_owns): the Vulkan renderer presents to the display itself, and the host frame
+    // is only an overlay over its picture (the fps line, the settings menu), cleared to transparent; what was drawn
+    // in it since the last clear is published for the renderer at the end of a frame (the region that changed).
+    std::atomic<bool> g_gpuOwnsScreen{false};
+    bool g_videoTried = false;
+    int g_dirtyX0 = kWidth, g_dirtyY0 = kHeight, g_dirtyX1 = 0, g_dirtyY1 = 0;
+    std::mutex g_overlayLock;
+    std::vector<uint32_t> g_overlay;               // the published overlay, kWidth x kHeight
+    int g_pubX0 = 0, g_pubY0 = 0, g_pubX1 = 0, g_pubY1 = 0; // what changed since the renderer last took it
+    uint64_t g_overlaySerial = 0;
+    int g_lastX0 = kWidth, g_lastY0 = kHeight, g_lastX1 = 0, g_lastY1 = 0; // the last frame's drawn region
+
+    inline void touch(int x0, int y0, int x1, int y1)
+    {
+        g_dirtyX0 = std::min(g_dirtyX0, x0);
+        g_dirtyY0 = std::min(g_dirtyY0, y0);
+        g_dirtyX1 = std::max(g_dirtyX1, x1);
+        g_dirtyY1 = std::max(g_dirtyY1, y1);
+    }
+
     // The display's tiling (screen_ps5.c's tiled_offset): 64 KiB tiles of 128x128 pixels, 15 to a row of 1920;
     // inside a tile the byte offset is the XOR of a part from x and a part from y.
     uint32_t g_tileX[kWidth], g_inX[kWidth], g_tileY[kHeight], g_inY[kHeight];
@@ -207,6 +228,18 @@ namespace
             return src;
         if (a == 0u)
             return dst;
+        const uint32_t da = dst >> 24;
+        if (da != 255u)
+        {
+            // over a transparent overlay: straight alpha, out = src + dst x (1 - a)
+            const float sa = a / 255.0f, dA = da / 255.0f, oa = sa + dA * (1.0f - sa);
+            auto ch = [&](int shift)
+            {
+                const float sc = float((src >> shift) & 0xffu), dc = float((dst >> shift) & 0xffu);
+                return uint32_t(std::lround((sc * sa + dc * dA * (1.0f - sa)) / oa)) << shift;
+            };
+            return (uint32_t(std::lround(oa * 255.0f)) << 24) | ch(16) | ch(8) | ch(0);
+        }
         const uint32_t ia = 255u - a;
         const uint32_t rb = (((src & 0xff00ffu) * a + (dst & 0xff00ffu) * ia + 0x800080u) >> 8) & 0xff00ffu;
         const uint32_t g = (((src & 0x00ff00u) * a + (dst & 0x00ff00u) * ia + 0x008000u) >> 8) & 0x00ff00u;
@@ -218,6 +251,7 @@ namespace
         int x0 = std::max(0, x), y0 = std::max(0, y), x1 = std::min(kWidth, x + w), y1 = std::min(kHeight, y + h);
         if (x0 >= x1 || y0 >= y1 || g_frame.empty())
             return;
+        touch(x0, y0, x1, y1);
         for (int j = y0; j < y1; ++j)
         {
             uint32_t *row = g_frame.data() + size_t(j) * kWidth;
@@ -238,6 +272,11 @@ namespace
     };
     std::mutex g_texLock;
     std::unordered_map<unsigned, Tex> g_textures;
+    // the last picture the host drew while the screen is the GPU's (R8G8B8A8, rows top down)
+    std::mutex g_pictureLock;
+    std::vector<uint8_t> g_picture;
+    int g_pictureW = 0, g_pictureH = 0;
+    uint64_t g_pictureSerial = 0;
     unsigned g_nextTexture = 1;
 
     Tex *findTexture(unsigned id)
@@ -465,8 +504,10 @@ void InitWindow(int, int, const char *title)
         return;
     std::fprintf(stderr, "[ps5] InitWindow\n");
     g_frame.assign(size_t(kWidth) * kHeight, 0xff000000u);
-    g_windowReady = openVideo();
-    std::fprintf(stderr, "[ps5] window \"%s\": VideoOut 1920x1080 %s\n", title ? title : "", g_windowReady ? "open" : "FAILED");
+    // VideoOut is opened at the first frame shown, unless the Vulkan renderer has taken the screen by then (a
+    // process opens VideoOut once: the renderer's swapchain opens it in the driver, rc_screen_gpu_owns)
+    g_windowReady = true;
+    std::fprintf(stderr, "[ps5] window \"%s\": VideoOut 1920x1080 at the first frame\n", title ? title : "");
     pollPad();
 }
 
@@ -504,7 +545,48 @@ void PollInputEvents(void) { pollPad(); }
 
 void EndDrawing(void)
 {
-    if (g_windowReady && !g_frame.empty())
+    if (g_gpuOwnsScreen.load(std::memory_order_acquire))
+    {
+        // the overlay for the renderer: what this frame drew and what the last one did (now cleared)
+        const int x0 = std::min(g_dirtyX0, g_lastX0), y0 = std::min(g_dirtyY0, g_lastY0);
+        const int x1 = std::max(g_dirtyX1, g_lastX1), y1 = std::max(g_dirtyY1, g_lastY1);
+        if (x0 < x1 && y0 < y1)
+        {
+            std::lock_guard<std::mutex> lock(g_overlayLock);
+            if (g_overlay.size() != g_frame.size())
+                g_overlay.assign(g_frame.size(), 0u);
+            for (int y = y0; y < y1; ++y)
+                std::memcpy(&g_overlay[size_t(y) * kWidth + x0], &g_frame[size_t(y) * kWidth + x0], size_t(x1 - x0) * 4u);
+            if (g_pubX0 < g_pubX1)
+            {
+                g_pubX0 = std::min(g_pubX0, x0);
+                g_pubY0 = std::min(g_pubY0, y0);
+                g_pubX1 = std::max(g_pubX1, x1);
+                g_pubY1 = std::max(g_pubY1, y1);
+            }
+            else
+            {
+                g_pubX0 = x0;
+                g_pubY0 = y0;
+                g_pubX1 = x1;
+                g_pubY1 = y1;
+            }
+            ++g_overlaySerial;
+        }
+        g_lastX0 = g_dirtyX0;
+        g_lastY0 = g_dirtyY0;
+        g_lastX1 = g_dirtyX1;
+        g_lastY1 = g_dirtyY1;
+    }
+    else if (g_windowReady && !g_frame.empty() && g_video.handle < 0 && !g_videoTried)
+    {
+        g_videoTried = true;
+        if (!openVideo())
+            std::fprintf(stderr, "[ps5] VideoOut could not be opened: nothing will be shown\n");
+        else
+            std::fprintf(stderr, "[ps5] VideoOut 1920x1080 open (the host draws the picture)\n");
+    }
+    if (!g_gpuOwnsScreen.load(std::memory_order_relaxed) && g_video.handle >= 0 && !g_frame.empty())
     {
         // the frame into the next scan-out buffer, in the display's tiling, then out of the CPU's caches
         uint8_t *dst = g_video.buffers + size_t(g_video.next) * kBufferBytes;
@@ -562,8 +644,19 @@ void EndDrawing(void)
 
 void ClearBackground(Color color)
 {
-    if (!g_frame.empty())
-        std::fill(g_frame.begin(), g_frame.end(), pack(color) | 0xff000000u);
+    if (g_frame.empty())
+        return;
+    if (g_gpuOwnsScreen.load(std::memory_order_relaxed))
+    {
+        // the overlay: transparent where nothing is drawn (only the last frame's region needs clearing)
+        for (int y = g_dirtyY0; y < g_dirtyY1; ++y)
+            std::fill_n(&g_frame[size_t(y) * kWidth + g_dirtyX0], g_dirtyX1 - g_dirtyX0, 0u);
+        g_dirtyX0 = kWidth;
+        g_dirtyY0 = kHeight;
+        g_dirtyX1 = g_dirtyY1 = 0;
+        return;
+    }
+    std::fill(g_frame.begin(), g_frame.end(), pack(color) | 0xff000000u);
 }
 
 void DrawRectangle(int posX, int posY, int width, int height, Color color) { fillRect(posX, posY, width, height, pack(color)); }
@@ -592,6 +685,33 @@ void DrawTexture(Texture2D texture, int posX, int posY, Color tint)
 // source width or height flips that way, as in raylib. Bilinear for a texture set to TEXTURE_FILTER_BILINEAR.
 void DrawTexturePro(Texture2D texture, Rectangle source, Rectangle dest, Vector2 origin, float, Color tint)
 {
+    // the GPU's screen: the picture goes to the renderer, which shows it when it has no picture of its own (the
+    // emulated GS's frames: the boot, the films)
+    if (g_gpuOwnsScreen.load(std::memory_order_relaxed))
+    {
+        std::lock_guard<std::mutex> lock(g_texLock);
+        Tex *tex = findTexture(texture.id);
+        if (!tex || tex->rgba.empty())
+            return;
+        const int sx = std::clamp(int(std::lround(std::min(source.x, source.x + source.width))), 0, tex->width);
+        const int sy = std::clamp(int(std::lround(std::min(source.y, source.y + source.height))), 0, tex->height);
+        const int sw = std::min(tex->width - sx, int(std::lround(std::fabs(source.width))));
+        const int sh = std::min(tex->height - sy, int(std::lround(std::fabs(source.height))));
+        if (sw <= 0 || sh <= 0)
+            return;
+        std::lock_guard<std::mutex> plock(g_pictureLock);
+        g_picture.resize(size_t(sw) * sh * 4u);
+        const bool flipY = source.height < 0.0f;
+        for (int y = 0; y < sh; ++y)
+        {
+            const int from = sy + (flipY ? sh - 1 - y : y);
+            std::memcpy(&g_picture[size_t(y) * sw * 4u], &tex->rgba[(size_t(from) * tex->width + sx) * 4u], size_t(sw) * 4u);
+        }
+        g_pictureW = sw;
+        g_pictureH = sh;
+        ++g_pictureSerial;
+        return;
+    }
     if (g_frame.empty() || dest.width <= 0.0f || dest.height <= 0.0f)
         return;
     std::lock_guard<std::mutex> lock(g_texLock);
@@ -705,6 +825,7 @@ void DrawText(const char *text, int posX, int posY, int fontSize, Color color)
         if (cp != ' ')
         {
             const int gw = int(std::lround(g.w * scale)), gh = fontSize;
+            touch(std::max(0, int(x)), std::max(0, y), std::min(kWidth, int(x) + gw), std::min(kHeight, y + gh));
             for (int j = 0; j < gh; ++j)
             {
                 const int py = y + j;
@@ -1048,4 +1169,61 @@ void SetAudioStreamVolume(AudioStream stream, float volume)
 {
     if (auto *st = static_cast<Stream *>(stream.buffer))
         st->volume.store(std::clamp(volume, 0.0f, 1.0f));
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The Vulkan renderer's side (ps5/vk/native_renderer_vk.cpp, rc_screen.h)
+extern "C" void rc_screen_gpu_owns(void)
+{
+    if (g_gpuOwnsScreen.exchange(true))
+        return;
+    sceSystemServiceHideSplashScreen();
+    if (!g_frame.empty())
+        std::fill(g_frame.begin(), g_frame.end(), 0u);
+    std::fprintf(stderr, "[ps5] the screen is the Vulkan renderer's: the host draws its overlay only\n");
+}
+
+extern "C" int rc_screen_overlay_size(int *width, int *height)
+{
+    *width = kWidth;
+    *height = kHeight;
+    return 1;
+}
+
+// The overlay's region changed since the last call into dst (rows of x1 - x0 pixels, B8G8R8A8), 1 when there is one.
+extern "C" int rc_screen_overlay_take(void *dst, size_t capacity, int *x0, int *y0, int *x1, int *y1)
+{
+    std::lock_guard<std::mutex> lock(g_overlayLock);
+    if (g_pubX0 >= g_pubX1 || g_pubY0 >= g_pubY1 || g_overlay.empty())
+        return 0;
+    const size_t row = size_t(g_pubX1 - g_pubX0) * 4u;
+    if (row * size_t(g_pubY1 - g_pubY0) > capacity)
+        return 0;
+    for (int y = g_pubY0; y < g_pubY1; ++y)
+        std::memcpy(static_cast<uint8_t *>(dst) + size_t(y - g_pubY0) * row, &g_overlay[size_t(y) * kWidth + g_pubX0], row);
+    *x0 = g_pubX0;
+    *y0 = g_pubY0;
+    *x1 = g_pubX1;
+    *y1 = g_pubY1;
+    g_pubX0 = g_pubX1 = g_pubY0 = g_pubY1 = 0;
+    return 1;
+}
+
+// The picture the host drew last (the emulated GS's), when newer than *serial: R8G8B8A8 rows, top down.
+extern "C" int rc_screen_picture_take(void *dst, size_t capacity, int *width, int *height, unsigned long long *serial)
+{
+    std::lock_guard<std::mutex> lock(g_pictureLock);
+    if (g_pictureSerial == *serial || g_picture.empty() || g_picture.size() > capacity)
+        return 0;
+    std::memcpy(dst, g_picture.data(), g_picture.size());
+    *width = g_pictureW;
+    *height = g_pictureH;
+    *serial = g_pictureSerial;
+    return 1;
+}
+
+extern "C" unsigned long long rc_screen_overlay_serial(void)
+{
+    std::lock_guard<std::mutex> lock(g_overlayLock);
+    return g_overlaySerial;
 }

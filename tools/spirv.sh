@@ -23,5 +23,7 @@ build kVkMainVertSkinned main.vert -DSKINNED
 build kVkMainFrag main.frag
 build kVkQuadVert quad.vert
 build kVkQuadFrag quad.frag
+build kVkPresentVert present.vert
+build kVkPresentFrag present.frag
 mv "$tmp" "$header"
 echo "spirv: $header"

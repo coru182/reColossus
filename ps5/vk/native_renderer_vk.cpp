@@ -18,6 +18,8 @@
 // The Vulkan entry points: RADV's vk_icdGetInstanceProcAddr on the PS5 (no loader there, as in reKing), the
 // system's libvulkan elsewhere (tests/vk_check.cpp runs this file on Linux against lavapipe and the GL backend).
 #include "native_backend.h"
+#include "runtime/native_renderer.h"
+#include "runtime/host_menu.h"
 #include "runtime/native_tuning.h"
 #include "ThreadNaming.h"
 
@@ -47,6 +49,7 @@
 #if defined(PLATFORM_PS5) || defined(__PROSPERO__)
 #define RC_VK_STATIC_ICD 1
 extern "C" PFN_vkVoidFunction VKAPI_CALL vk_icdGetInstanceProcAddr(VkInstance instance, const char *name);
+#include "ps5/rc_screen.h"
 #else
 #define RC_VK_STATIC_ICD 0
 #include <dlfcn.h>
@@ -82,11 +85,22 @@ namespace
     X(vkCmdBindPipeline) X(vkCmdBindDescriptorSets) X(vkCmdBindVertexBuffers) X(vkCmdBindIndexBuffer) X(vkCmdDraw)      \
     X(vkCmdDrawIndexed) X(vkCmdSetViewport) X(vkCmdSetScissor) X(vkCmdPushConstants) X(vkCmdClearAttachments)           \
     X(vkCmdClearColorImage) X(vkCmdCopyBufferToImage) X(vkCmdCopyImageToBuffer)
+    // The display (VK_KHR_display on the PS5's VideoOut, PS5_Mesa's wsi_common_videoout.c) and its swapchain:
+    // loaded when there, the picture read back to the host otherwise.
+#define RC_VK_DISPLAY_INSTANCE_FUNCS(X)                                                                                 \
+    X(vkEnumerateDeviceExtensionProperties) X(vkGetPhysicalDeviceDisplayPropertiesKHR) X(vkGetDisplayModePropertiesKHR)  \
+    X(vkCreateDisplayPlaneSurfaceKHR) X(vkGetPhysicalDeviceSurfaceCapabilitiesKHR) X(vkGetPhysicalDeviceSurfaceFormatsKHR) \
+    X(vkGetPhysicalDeviceSurfaceSupportKHR)
+#define RC_VK_DISPLAY_DEVICE_FUNCS(X)                                                                                   \
+    X(vkCreateSwapchainKHR) X(vkGetSwapchainImagesKHR) X(vkAcquireNextImageKHR) X(vkQueuePresentKHR) X(vkCreateSemaphore)
 #define RC_VK_DECLARE(name) PFN_##name name = nullptr;
     PFN_vkGetInstanceProcAddr vkGetInstanceProcAddrFn = nullptr;
     PFN_vkCreateInstance vkCreateInstance = nullptr;
+    PFN_vkEnumerateInstanceExtensionProperties vkEnumerateInstanceExtensionProperties = nullptr;
     RC_VK_INSTANCE_FUNCS(RC_VK_DECLARE)
     RC_VK_DEVICE_FUNCS(RC_VK_DECLARE)
+    RC_VK_DISPLAY_INSTANCE_FUNCS(RC_VK_DECLARE)
+    RC_VK_DISPLAY_DEVICE_FUNCS(RC_VK_DECLARE)
 #undef RC_VK_DECLARE
 
     const char *resultName(VkResult r)
@@ -389,6 +403,51 @@ namespace
         native_renderer::DepthOfField dof;
         bool hold = false;
 
+        // ---- the display (direct): the picture fitted to it, the host's overlay over it ----
+        bool displayExtensions = false, direct = false, headless = false;
+        VkSurfaceKHR surface = VK_NULL_HANDLE;
+        VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+        VkFormat swapchainFormat = VK_FORMAT_B8G8R8A8_UNORM;
+        VkExtent2D screen{0, 0};
+        std::vector<VkImage> swapchainImages;
+        std::vector<VkImageView> swapchainViews;
+        std::vector<VkFramebuffer> swapchainFramebuffers;
+        VkRenderPass rpPresent = VK_NULL_HANDLE;
+        VkShaderModule presentVert = VK_NULL_HANDLE, presentFrag = VK_NULL_HANDLE;
+        VkPipeline presentPicture = VK_NULL_HANDLE, presentOverlay = VK_NULL_HANDLE;
+        VkSemaphore acquired = VK_NULL_HANDLE, drawn = VK_NULL_HANDLE;
+        Image overlay, cpuPicture;
+        Stream overlayStaging, cpuStaging;
+        unsigned long long cpuSerial = 0, overlaySeen = 0;
+        int cpuWidth = 0, cpuHeight = 0;
+        uint64_t lastPresentUs = 0, lastNativePresentUs = 0, lastIdleCheckUs = 0;
+        bool presentCpu = false; // this present shows the host's picture (the emulated GS's), not the renderer's
+        bool idleDue() const
+        {
+            const uint64_t now = native_renderer::nowUs();
+            return direct && now - lastNativePresentUs >= 100000u && now - lastIdleCheckUs >= 8000u;
+        }
+        void presentIdle();
+        void queuePresent();
+        bool presentNext = false;     // this frame's commands end with the present pass
+        uint32_t presentImage = 0;
+        float pictureAspect = 4.0f / 3.0f; // the display aspect the picture is shown at (this frame's)
+        float cpuAspect = 4.0f / 3.0f;     // the host's pictures' (the emulated GS's)
+        bool pictureStretched = false;
+        bool setupDisplay();
+        bool setupSwapchain(VkExtent2D extent);
+        void recordPresent();
+        // The rectangle of the screen the picture takes: the aspect, centred (or all of it, stretched).
+        VkRect2D fitRect() const
+        {
+            if (pictureStretched || !screen.width || !screen.height)
+                return VkRect2D{{0, 0}, screen};
+            const float sw = static_cast<float>(screen.width), sh = static_cast<float>(screen.height);
+            const float w = std::min(sw, sh * pictureAspect), h = w / pictureAspect;
+            const uint32_t iw = static_cast<uint32_t>(std::lround(w)) & ~1u, ih = static_cast<uint32_t>(std::lround(h)) & ~1u;
+            return VkRect2D{{static_cast<int32_t>((screen.width - iw) / 2u), static_cast<int32_t>((screen.height - ih) / 2u)}, {iw, ih}};
+        }
+
         std::mutex outputMutex;
         std::vector<uint8_t> output;
         uint32_t outputWidth = 0, outputHeight = 0;
@@ -573,12 +632,13 @@ namespace
         }
         MemBlock &blockOf(const Alloc &a) { return pools[a.pool].blocks[a.block]; }
 
-        bool makeImage(Image &img, uint32_t w, uint32_t h, uint32_t levels, bool depthImage, VkImageUsageFlags usage)
+        bool makeImage(Image &img, uint32_t w, uint32_t h, uint32_t levels, bool depthImage, VkImageUsageFlags usage,
+                       VkFormat format = VK_FORMAT_R8G8B8A8_UNORM)
         {
             destroyImage(img);
             VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
             ci.imageType = VK_IMAGE_TYPE_2D;
-            ci.format = depthImage ? depthFormat : VK_FORMAT_R8G8B8A8_UNORM;
+            ci.format = depthImage ? depthFormat : format;
             ci.extent = {std::max(w, 1u), std::max(h, 1u), 1};
             ci.mipLevels = std::max(levels, 1u);
             ci.arrayLayers = 1;
@@ -690,7 +750,7 @@ namespace
             bloomHistory = false;
             width = w;
             height = h;
-            if (!readback.buffer || readback.size < static_cast<VkDeviceSize>(w) * h * 4u)
+            if (!direct && (!readback.buffer || readback.size < static_cast<VkDeviceSize>(w) * h * 4u))
                 makeStream(readback, static_cast<VkDeviceSize>(w) * h * 4u, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true);
             std::fprintf(stderr, "[native:vk] targets %ux%u\n", w, h);
         }
@@ -1277,6 +1337,15 @@ namespace
             VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
             si.commandBufferCount = 1;
             si.pCommandBuffers = &cmd;
+            const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+            if (presentNext)
+            {
+                si.waitSemaphoreCount = 1;
+                si.pWaitSemaphores = &acquired;
+                si.pWaitDstStageMask = &waitStage;
+                si.signalSemaphoreCount = 1;
+                si.pSignalSemaphores = &drawn;
+            }
             VkResult r = vkQueueSubmit(queue, 1, &si, fence);
             if (r == VK_SUCCESS)
                 r = vkWaitForFences(device, 1, &fence, VK_TRUE, 10ull * 1000 * 1000 * 1000);
@@ -1319,12 +1388,25 @@ namespace
             if (!beginCommands())
                 return;
             applyUploads();
+            presentNext = false;
             if (!hold)
+            {
                 render(w, h);
+                if (direct && native_renderer::tuning().showNative)
+                {
+                    presentCpu = false;
+                    recordPresent();
+                }
+            }
             const uint64_t t1 = native_renderer::nowUs();
             const bool ok = submitAndWait();
             const uint64_t t2 = native_renderer::nowUs();
-            if (ok && !hold)
+            if (ok && presentNext)
+            {
+                queuePresent();
+                lastNativePresentUs = lastPresentUs;
+            }
+            if (ok && !hold && !direct)
                 finishReadback();
             const uint64_t t3 = native_renderer::nowUs();
             timing.recordUs += t1 - t0;
@@ -1374,9 +1456,45 @@ namespace
         VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
         app.pApplicationName = "reColossus";
         app.pEngineName = "Celosia native renderer";
-        app.apiVersion = VK_API_VERSION_1_0;
+        app.apiVersion = VK_API_VERSION_1_1; // external memory (the PS5's swapchain imports VideoOut's buffers) in the core
         VkInstanceCreateInfo ici{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
         ici.pApplicationInfo = &app;
+        // The display: the PS5's own (VK_KHR_display), unless RECOLOSSUS_PRESENT=host (the picture read back and
+        // shown by the host, as up to 0.2.3).
+        const char *instanceExtensions[2] = {VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_DISPLAY_EXTENSION_NAME};
+        {
+            const char *present = std::getenv("RECOLOSSUS_PRESENT");
+#if RC_VK_STATIC_ICD
+            const bool wantDirect = !(present && std::strcmp(present, "host") == 0);
+#else
+            // the Linux check (tests/vk_check.sh): RECOLOSSUS_PRESENT=headless presents to a surface of no window
+            headless = present && std::strcmp(present, "headless") == 0;
+            if (headless)
+                instanceExtensions[1] = "VK_EXT_headless_surface";
+            const bool wantDirect = headless || (present && std::strcmp(present, "display") == 0);
+#endif
+            vkEnumerateInstanceExtensionProperties = reinterpret_cast<PFN_vkEnumerateInstanceExtensionProperties>(
+                vkGetInstanceProcAddrFn(VK_NULL_HANDLE, "vkEnumerateInstanceExtensionProperties"));
+            if (wantDirect && vkEnumerateInstanceExtensionProperties)
+            {
+                uint32_t n = 0;
+                vkEnumerateInstanceExtensionProperties(nullptr, &n, nullptr);
+                std::vector<VkExtensionProperties> ext(n);
+                if (n)
+                    vkEnumerateInstanceExtensionProperties(nullptr, &n, ext.data());
+                int found = 0;
+                for (const VkExtensionProperties &e : ext)
+                    for (const char *want : instanceExtensions)
+                        found += std::strcmp(e.extensionName, want) == 0 ? 1 : 0;
+                displayExtensions = found == 2;
+                std::fprintf(stderr, "[native:vk] display extensions %s\n", displayExtensions ? "there" : "missing: the host shows the picture");
+            }
+        }
+        if (displayExtensions)
+        {
+            ici.enabledExtensionCount = 2;
+            ici.ppEnabledExtensionNames = instanceExtensions;
+        }
         if (!check(vkCreateInstance(&ici, nullptr, &instance), "vkCreateInstance"))
             return false;
         bool missing = false;
@@ -1391,6 +1509,9 @@ namespace
 #undef RC_VK_LOAD_INSTANCE
         if (missing)
             return false;
+#define RC_VK_LOAD_OPTIONAL(name) name = reinterpret_cast<PFN_##name>(vkGetInstanceProcAddrFn(instance, #name));
+        RC_VK_DISPLAY_INSTANCE_FUNCS(RC_VK_LOAD_OPTIONAL)
+#undef RC_VK_LOAD_OPTIONAL
         uint32_t n = 0;
         vkEnumeratePhysicalDevices(instance, &n, nullptr);
         std::vector<VkPhysicalDevice> gpus(n);
@@ -1435,6 +1556,34 @@ namespace
         dci.queueCreateInfoCount = 1;
         dci.pQueueCreateInfos = &qci;
         dci.pEnabledFeatures = &want;
+        // The swapchain, and host memory imports (the PS5's WSI takes VideoOut's buffers in as host memory).
+        std::vector<const char *> deviceExtensions;
+        if (displayExtensions && vkEnumerateDeviceExtensionProperties)
+        {
+            uint32_t n = 0;
+            vkEnumerateDeviceExtensionProperties(gpu, nullptr, &n, nullptr);
+            std::vector<VkExtensionProperties> ext(n);
+            if (n)
+                vkEnumerateDeviceExtensionProperties(gpu, nullptr, &n, ext.data());
+            bool swap = false;
+            for (const VkExtensionProperties &e : ext)
+            {
+                if (std::strcmp(e.extensionName, VK_KHR_SWAPCHAIN_EXTENSION_NAME) == 0)
+                    swap = true;
+                else if (std::strcmp(e.extensionName, "VK_EXT_external_memory_host") == 0)
+                    deviceExtensions.push_back("VK_EXT_external_memory_host");
+            }
+            if (swap)
+                deviceExtensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+            else
+            {
+                displayExtensions = false;
+                deviceExtensions.clear();
+                std::fprintf(stderr, "[native:vk] no VK_KHR_swapchain: the host shows the picture\n");
+            }
+        }
+        dci.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size());
+        dci.ppEnabledExtensionNames = deviceExtensions.empty() ? nullptr : deviceExtensions.data();
         if (!check(vkCreateDevice(gpu, &dci, nullptr, &device), "vkCreateDevice"))
             return false;
 #define RC_VK_LOAD_DEVICE(name)                                                                                         \
@@ -1448,6 +1597,12 @@ namespace
 #undef RC_VK_LOAD_DEVICE
         if (missing)
             return false;
+        if (displayExtensions)
+        {
+#define RC_VK_LOAD_OPTIONAL(name) name = reinterpret_cast<PFN_##name>(vkGetDeviceProcAddr(device, #name));
+            RC_VK_DISPLAY_DEVICE_FUNCS(RC_VK_LOAD_OPTIONAL)
+#undef RC_VK_LOAD_OPTIONAL
+        }
         vkGetDeviceQueue(device, queueFamily, 0, &queue);
         std::fprintf(stderr, "[native:vk] %s, Vulkan %u.%u.%u, driver 0x%x, depth clamp %d, anisotropy %.0f\n", props.deviceName,
                      VK_VERSION_MAJOR(props.apiVersion), VK_VERSION_MINOR(props.apiVersion), VK_VERSION_PATCH(props.apiVersion), props.driverVersion,
@@ -1575,7 +1730,386 @@ namespace
         }
         std::fprintf(stderr, "[native:vk] up: depth format %d, uniform stride %llu, skinning on the GPU %d\n", static_cast<int>(depthFormat),
                      static_cast<unsigned long long>(uniformStride), skinOk ? 1 : 0);
+        if (displayExtensions)
+        {
+            direct = setupDisplay();
+            if (!direct)
+                std::fprintf(stderr, "[native:vk] the display could not be set up: the host shows the picture (1920x1080)\n");
+#if RC_VK_STATIC_ICD
+            else
+                rc_screen_gpu_owns();
+#endif
+        }
         return true;
+    }
+
+    // The PS5's display (PS5_Mesa's VK_KHR_display on VideoOut): the mode of the height asked for (RECOLOSSUS_OUTPUT,
+    // 2160 by default; 1440 or 1080) at 60 Hz, a FIFO swapchain of B8G8R8A8, and what presents the picture onto it.
+    bool Renderer::setupDisplay()
+    {
+        if (headless)
+            return setupSwapchain(VkExtent2D{1280, 720});
+        if (!vkGetPhysicalDeviceDisplayPropertiesKHR || !vkGetDisplayModePropertiesKHR || !vkCreateDisplayPlaneSurfaceKHR ||
+            !vkGetPhysicalDeviceSurfaceCapabilitiesKHR || !vkGetPhysicalDeviceSurfaceFormatsKHR || !vkCreateSwapchainKHR ||
+            !vkGetSwapchainImagesKHR || !vkAcquireNextImageKHR || !vkQueuePresentKHR || !vkCreateSemaphore)
+        {
+            std::fprintf(stderr, "[native:vk] display: entry points missing\n");
+            return false;
+        }
+        uint32_t n = 0;
+        vkGetPhysicalDeviceDisplayPropertiesKHR(gpu, &n, nullptr);
+        if (!n)
+        {
+            std::fprintf(stderr, "[native:vk] display: none\n");
+            return false;
+        }
+        std::vector<VkDisplayPropertiesKHR> displays(n);
+        vkGetPhysicalDeviceDisplayPropertiesKHR(gpu, &n, displays.data());
+        const VkDisplayKHR display = displays[0].display;
+        uint32_t m = 0;
+        vkGetDisplayModePropertiesKHR(gpu, display, &m, nullptr);
+        std::vector<VkDisplayModePropertiesKHR> modes(m);
+        if (m)
+            vkGetDisplayModePropertiesKHR(gpu, display, &m, modes.data());
+        modes.resize(m);
+        if (modes.empty())
+        {
+            std::fprintf(stderr, "[native:vk] display: no modes\n");
+            return false;
+        }
+        const char *out = std::getenv("RECOLOSSUS_OUTPUT");
+        const uint32_t wantHeight = out && std::atoi(out) > 0 ? static_cast<uint32_t>(std::atoi(out)) : 2160u;
+        // The tallest mode not over the height asked for (the smallest there is when all are), at about 60 Hz.
+        const VkDisplayModePropertiesKHR *pick = nullptr;
+        for (const VkDisplayModePropertiesKHR &mp : modes)
+        {
+            const VkExtent2D e = mp.parameters.visibleRegion;
+            std::fprintf(stderr, "[native:vk] display mode %ux%u at %.2f Hz\n", e.width, e.height, mp.parameters.refreshRate / 1000.0);
+            if (mp.parameters.refreshRate > 70000u)
+                continue;
+            if (!pick)
+            {
+                pick = &mp;
+                continue;
+            }
+            const uint32_t have = pick->parameters.visibleRegion.height, h = e.height;
+            const bool fits = h <= wantHeight, haveFits = have <= wantHeight;
+            if ((fits && (!haveFits || h > have)) || (!fits && !haveFits && h < have))
+                pick = &mp;
+        }
+        if (!pick)
+            pick = &modes[0];
+        VkDisplaySurfaceCreateInfoKHR sci{VK_STRUCTURE_TYPE_DISPLAY_SURFACE_CREATE_INFO_KHR};
+        sci.displayMode = pick->displayMode;
+        sci.planeIndex = 0;
+        sci.planeStackIndex = 0;
+        sci.transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+        sci.globalAlpha = 1.0f;
+        sci.alphaMode = VK_DISPLAY_PLANE_ALPHA_OPAQUE_BIT_KHR;
+        sci.imageExtent = pick->parameters.visibleRegion;
+        if (!check(vkCreateDisplayPlaneSurfaceKHR(instance, &sci, nullptr, &surface), "vkCreateDisplayPlaneSurfaceKHR"))
+            return false;
+        return setupSwapchain(pick->parameters.visibleRegion);
+    }
+
+    bool Renderer::setupSwapchain(VkExtent2D extent)
+    {
+#if !RC_VK_STATIC_ICD
+        if (headless)
+        {
+            auto create = reinterpret_cast<PFN_vkCreateHeadlessSurfaceEXT>(vkGetInstanceProcAddrFn(instance, "vkCreateHeadlessSurfaceEXT"));
+            VkHeadlessSurfaceCreateInfoEXT hci{VK_STRUCTURE_TYPE_HEADLESS_SURFACE_CREATE_INFO_EXT};
+            if (!create || !check(create(instance, &hci, nullptr, &surface), "vkCreateHeadlessSurfaceEXT"))
+                return false;
+        }
+#endif
+        if (!vkGetPhysicalDeviceSurfaceCapabilitiesKHR || !vkGetPhysicalDeviceSurfaceFormatsKHR || !vkCreateSwapchainKHR || !vkGetSwapchainImagesKHR ||
+            !vkAcquireNextImageKHR || !vkQueuePresentKHR || !vkCreateSemaphore)
+            return false;
+        if (vkGetPhysicalDeviceSurfaceSupportKHR)
+        {
+            VkBool32 supported = VK_FALSE;
+            vkGetPhysicalDeviceSurfaceSupportKHR(gpu, queueFamily, surface, &supported);
+            if (!supported)
+            {
+                std::fprintf(stderr, "[native:vk] display: the queue cannot present to it\n");
+                return false;
+            }
+        }
+        VkSurfaceCapabilitiesKHR caps{};
+        if (!check(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpu, surface, &caps), "vkGetPhysicalDeviceSurfaceCapabilitiesKHR"))
+            return false;
+        uint32_t fn = 0;
+        vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, surface, &fn, nullptr);
+        std::vector<VkSurfaceFormatKHR> formats(fn);
+        if (fn)
+            vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, surface, &fn, formats.data());
+        formats.resize(fn);
+        if (formats.empty())
+            return false;
+        // UNORM: the picture is already in the display's encoding (as the GL backend's, shown as it is)
+        VkSurfaceFormatKHR format = formats[0];
+        for (const VkSurfaceFormatKHR &f : formats)
+            if (f.format == VK_FORMAT_B8G8R8A8_UNORM || f.format == VK_FORMAT_R8G8B8A8_UNORM)
+            {
+                format = f;
+                break;
+            }
+        swapchainFormat = format.format;
+        screen = caps.currentExtent.width != 0xFFFFFFFFu ? caps.currentExtent : extent;
+        VkSwapchainCreateInfoKHR ci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
+        ci.surface = surface;
+        ci.minImageCount = std::max(caps.minImageCount, 3u);
+        if (caps.maxImageCount)
+            ci.minImageCount = std::min(ci.minImageCount, caps.maxImageCount);
+        ci.imageFormat = format.format;
+        ci.imageColorSpace = format.colorSpace;
+        ci.imageExtent = screen;
+        ci.imageArrayLayers = 1;
+        ci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        ci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        ci.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+        ci.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+        ci.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+        ci.clipped = VK_TRUE;
+        if (!check(vkCreateSwapchainKHR(device, &ci, nullptr, &swapchain), "vkCreateSwapchainKHR"))
+            return false;
+        uint32_t images = 0;
+        vkGetSwapchainImagesKHR(device, swapchain, &images, nullptr);
+        swapchainImages.resize(images);
+        vkGetSwapchainImagesKHR(device, swapchain, &images, swapchainImages.data());
+        swapchainImages.resize(images);
+
+        // The present pass: the screen cleared to black, the picture in its rectangle, the overlay over all of it.
+        VkAttachmentDescription a{};
+        a.format = swapchainFormat;
+        a.samples = VK_SAMPLE_COUNT_1_BIT;
+        a.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        a.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        a.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        a.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        a.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        a.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        VkAttachmentReference c{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+        VkSubpassDescription sub{};
+        sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        sub.colorAttachmentCount = 1;
+        sub.pColorAttachments = &c;
+        VkSubpassDependency dep{};
+        dep.srcSubpass = VK_SUBPASS_EXTERNAL;
+        dep.dstSubpass = 0;
+        dep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dep.srcAccessMask = 0;
+        dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        VkRenderPassCreateInfo rpi{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+        rpi.attachmentCount = 1;
+        rpi.pAttachments = &a;
+        rpi.subpassCount = 1;
+        rpi.pSubpasses = &sub;
+        rpi.dependencyCount = 1;
+        rpi.pDependencies = &dep;
+        if (!check(vkCreateRenderPass(device, &rpi, nullptr, &rpPresent), "vkCreateRenderPass (present)"))
+            return false;
+        for (VkImage img : swapchainImages)
+        {
+            VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+            vi.image = img;
+            vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            vi.format = swapchainFormat;
+            vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            VkImageView view = VK_NULL_HANDLE;
+            if (!check(vkCreateImageView(device, &vi, nullptr, &view), "vkCreateImageView (swapchain)"))
+                return false;
+            swapchainViews.push_back(view);
+            VkFramebufferCreateInfo fi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+            fi.renderPass = rpPresent;
+            fi.attachmentCount = 1;
+            fi.pAttachments = &view;
+            fi.width = screen.width;
+            fi.height = screen.height;
+            fi.layers = 1;
+            VkFramebuffer f = VK_NULL_HANDLE;
+            if (!check(vkCreateFramebuffer(device, &fi, nullptr, &f), "vkCreateFramebuffer (swapchain)"))
+                return false;
+            swapchainFramebuffers.push_back(f);
+        }
+        presentVert = shader(kVkPresentVert, sizeof(kVkPresentVert));
+        presentFrag = shader(kVkPresentFrag, sizeof(kVkPresentFrag));
+        if (!presentVert || !presentFrag)
+            return false;
+        VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+        presentPicture = makePipeline(presentVert, presentFrag, quadLayout, rpPresent, 0,
+                                      blendState(false, VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD, VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO),
+                                      ds, false);
+        presentOverlay = makePipeline(presentVert, presentFrag, quadLayout, rpPresent, 0,
+                                      blendState(true, VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_OP_ADD, VK_BLEND_FACTOR_ZERO,
+                                                 VK_BLEND_FACTOR_ONE),
+                                      ds, false);
+        if (!presentPicture || !presentOverlay)
+            return false;
+        VkSemaphoreCreateInfo semi{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+        if (!check(vkCreateSemaphore(device, &semi, nullptr, &acquired), "vkCreateSemaphore") ||
+            !check(vkCreateSemaphore(device, &semi, nullptr, &drawn), "vkCreateSemaphore"))
+            return false;
+
+        // The host's overlay (its 1920x1080 frame, B8G8R8A8 with straight alpha), transparent to start with.
+        int ow = 1920, oh = 1080;
+#if RC_VK_STATIC_ICD
+        rc_screen_overlay_size(&ow, &oh);
+#endif
+        if (!makeImage(overlay, static_cast<uint32_t>(ow), static_cast<uint32_t>(oh), 1, false,
+                       VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_FORMAT_B8G8R8A8_UNORM) ||
+            !makeStream(overlayStaging, static_cast<VkDeviceSize>(ow) * oh * 4u, VK_BUFFER_USAGE_TRANSFER_SRC_BIT) ||
+            !makeStream(cpuStaging, 4u << 20, VK_BUFFER_USAGE_TRANSFER_SRC_BIT) || !beginCommands())
+            return false;
+        barrier(overlay, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        const VkClearColorValue clear{{0.0f, 0.0f, 0.0f, 0.0f}};
+        const VkImageSubresourceRange all{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdClearColorImage(cmd, overlay.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear, 1, &all);
+        barrier(overlay, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        if (!submitAndWait())
+            return false;
+        std::fprintf(stderr, "[native:vk] display %ux%u (format %d, %u images): the renderer presents, the picture at its own aspect\n", screen.width,
+                     screen.height, static_cast<int>(swapchainFormat), images);
+        return true;
+    }
+
+    // Recorded after the frame: the overlay's changes uploaded, a swapchain image acquired, and the present pass
+    // (the picture fitted to the screen, the overlay over it). The submission waits for the image, then signals
+    // `drawn` for vkQueuePresentKHR.
+    void Renderer::recordPresent()
+    {
+        endPass();
+#if RC_VK_STATIC_ICD
+        int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+        if (rc_screen_overlay_take(overlayStaging.mapped, static_cast<size_t>(overlayStaging.size), &x0, &y0, &x1, &y1) && x1 > x0 && y1 > y0)
+        {
+            barrier(overlay, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            VkBufferImageCopy region{};
+            region.bufferRowLength = static_cast<uint32_t>(x1 - x0);
+            region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            region.imageOffset = {x0, y0, 0};
+            region.imageExtent = {static_cast<uint32_t>(x1 - x0), static_cast<uint32_t>(y1 - y0), 1};
+            vkCmdCopyBufferToImage(cmd, overlayStaging.buffer, overlay.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+        }
+        overlaySeen = rc_screen_overlay_serial();
+#endif
+        Image &picture = presentCpu ? cpuPicture : color.color;
+        if (!picture.image)
+            return;
+        readable(picture);
+        readable(overlay);
+        const VkResult r = vkAcquireNextImageKHR(device, swapchain, 1000ull * 1000 * 1000, acquired, VK_NULL_HANDLE, &presentImage);
+        if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR)
+        {
+            static int told = 0;
+            if (told++ < 5)
+                check(r, "vkAcquireNextImageKHR");
+            return;
+        }
+        VkClearValue black{};
+        black.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+        VkRenderPassBeginInfo bi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+        bi.renderPass = rpPresent;
+        bi.framebuffer = swapchainFramebuffers[presentImage];
+        bi.renderArea = {{0, 0}, screen};
+        bi.clearValueCount = 1;
+        bi.pClearValues = &black;
+        vkCmdBeginRenderPass(cmd, &bi, VK_SUBPASS_CONTENTS_INLINE);
+        struct
+        {
+            int32_t mode, flip;
+        } push{0, presentCpu ? 0 : 1};
+        auto draw = [&](VkPipeline pipeline, Image &img, VkRect2D rect)
+        {
+            const Binding b[3] = {{img.view, linearClamp, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+                                  {img.view, linearClamp, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+                                  {img.view, linearClamp, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}};
+            const VkDescriptorSet set = imageSet(quadSetLayout, b, 3);
+            if (!set)
+                return;
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, quadLayout, 0, 1, &set, 0, nullptr);
+            const VkViewport vp{static_cast<float>(rect.offset.x), static_cast<float>(rect.offset.y), static_cast<float>(rect.extent.width),
+                                static_cast<float>(rect.extent.height), 0.0f, 1.0f};
+            vkCmdSetViewport(cmd, 0, 1, &vp);
+            vkCmdSetScissor(cmd, 0, 1, &rect);
+            vkCmdPushConstants(cmd, quadLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
+            vkCmdDraw(cmd, 3, 1, 0, 0);
+        };
+        const float savedAspect = pictureAspect;
+        if (presentCpu)
+            pictureAspect = cpuAspect;
+        draw(presentPicture, picture, fitRect());
+        pictureAspect = savedAspect;
+        push.mode = 1;
+        push.flip = 0;
+        draw(presentOverlay, overlay, VkRect2D{{0, 0}, screen});
+        vkCmdEndRenderPass(cmd);
+        boundPipeline = VK_NULL_HANDLE;
+        lastQuadSet = VK_NULL_HANDLE;
+        presentNext = true;
+    }
+
+    void Renderer::queuePresent()
+    {
+        VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+        pi.waitSemaphoreCount = 1;
+        pi.pWaitSemaphores = &drawn;
+        pi.swapchainCount = 1;
+        pi.pSwapchains = &swapchain;
+        pi.pImageIndices = &presentImage;
+        const VkResult r = vkQueuePresentKHR(queue, &pi);
+        if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR)
+        {
+            static int told = 0;
+            if (told++ < 5)
+                check(r, "vkQueuePresentKHR");
+        }
+        lastPresentUs = native_renderer::nowUs();
+    }
+
+    // No picture of the renderer's for a while (the boot, a film, a load: the emulated GS draws): the host's picture
+    // and overlay, presented when either is new (and every half second, so the screen keeps up).
+    void Renderer::presentIdle()
+    {
+        lastIdleCheckUs = native_renderer::nowUs();
+#if RC_VK_STATIC_ICD
+        int w = 0, h = 0;
+        const bool newPicture = rc_screen_picture_take(cpuStaging.mapped, static_cast<size_t>(cpuStaging.size), &w, &h, &cpuSerial) != 0;
+        const bool newOverlay = rc_screen_overlay_serial() != overlaySeen;
+        if (!newPicture && !newOverlay && lastIdleCheckUs - lastPresentUs < 500000u)
+            return;
+        if (!beginCommands())
+            return;
+        if (newPicture && w > 0 && h > 0)
+        {
+            if (!cpuPicture.image || cpuPicture.width != static_cast<uint32_t>(w) || cpuPicture.height != static_cast<uint32_t>(h))
+            {
+                lastQuadSet = VK_NULL_HANDLE;
+                makeImage(cpuPicture, static_cast<uint32_t>(w), static_cast<uint32_t>(h), 1, false,
+                          VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+            }
+            if (cpuPicture.image)
+            {
+                barrier(cpuPicture, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                VkBufferImageCopy region{};
+                region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+                region.imageExtent = {static_cast<uint32_t>(w), static_cast<uint32_t>(h), 1};
+                vkCmdCopyBufferToImage(cmd, cpuStaging.buffer, cpuPicture.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+            }
+        }
+        presentNext = false;
+        // the renderer's last picture while the game still shows it (a pause in its frames: a load), else the host's
+        presentCpu = !native_renderer::shown();
+        if (presentCpu ? cpuPicture.image != VK_NULL_HANDLE : color.color.image != VK_NULL_HANDLE)
+            recordPresent();
+        presentCpu = false;
+        if (submitAndWait() && presentNext)
+            queuePresent();
+        presentNext = false;
+#endif
     }
 
     // Per-frame meshes no frame made for a while (the kept ones and the textures: VkBackend::evictKept).
@@ -2274,6 +2808,8 @@ namespace
         }
         pass(color, fb(color), false, from, ~0u, loaded);
         copy(color, fb(previous));
+        if (direct)
+            return; // shown by recordPresent
         // Read back (turned over by finishReadback: the picture is laid out as GL's, row 0 at the bottom).
         endPass();
         barrier(color.color, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
@@ -2334,6 +2870,14 @@ namespace
             m_flushBytes = mb("SOTC_GL_UPLOAD_FLUSH_MB", 64.0);
             m_memLog = std::getenv("SOTC_GL_MEM_LOG") || std::getenv("SOTC_GL_CACHE_LOG");
             m_startUs = native_renderer::nowUs();
+            m_widescreen = std::getenv("RECOLOSSUS_WIDESCREEN") && std::atoi(std::getenv("RECOLOSSUS_WIDESCREEN")) != 0;
+            if (const char *a = std::getenv("RECOLOSSUS_ASPECT"))
+                m_forcedAspect = std::strcmp(a, "16:9") == 0 ? 169 : (std::strcmp(a, "4:3") == 0 ? 43 : (std::strcmp(a, "auto") == 0 ? -1 : 0));
+            std::fprintf(stderr, "[native:vk] picture: %s%s\n", m_widescreen ? "widescreen 16:9 (RECOLOSSUS_WIDESCREEN)" : "4:3",
+                         m_forcedAspect > 0 ? ", shown at RECOLOSSUS_ASPECT" : "");
+            m_aspectLog = std::getenv("SOTC_FRAME_LOG") != nullptr;
+            if (const char *v = std::getenv("RECOLOSSUS_RENDER_SCALE"))
+                m_renderScale = std::strcmp(v, "game") == 0 ? 0.0f : std::clamp(static_cast<float>(std::atof(v)), 0.25f, 1.0f);
         }
 
         bool start()
@@ -2439,7 +2983,38 @@ namespace
             flushIfLarge();
         }
         void beginFrame() override { clearFrame(); }
-        void draw(uint64_t mesh, const float clip[16], const native_renderer::DrawState &state) override { m_rec.draws.emplace_back(mesh, clip, state); }
+        void draw(uint64_t mesh, const float clip[16], const native_renderer::DrawState &state) override
+        {
+            // Perspective draws (w from z); flat ones (2D, the screen's own passes) have w = 1.
+            const float wz = std::fabs(clip[3]) + std::fabs(clip[7]) + std::fabs(clip[11]);
+            m_rec.draws.emplace_back(mesh, clip, state);
+            if (wz < 1e-6f)
+                return;
+            if (m_widescreen)
+            {
+                // RECOLOSSUS_WIDESCREEN: the 3D world seen wider (hor+, 16:9): clip x times 3/4. The 2D (the HUD,
+                // fades) is stretched to the screen; the game still culls models against its 4:3 view, so some pop
+                // in at the sides.
+                float *c = m_rec.draws.back().clip;
+                c[0] *= 0.75f;
+                c[4] *= 0.75f;
+                c[8] *= 0.75f;
+                c[12] *= 0.75f;
+                clip = c;
+            }
+            // The aspect the game projects for, |clip row y| / |clip row x| (logged with SOTC_FRAME_LOG).
+            const float x = clip[0] * clip[0] + clip[4] * clip[4] + clip[8] * clip[8];
+            const float y = clip[1] * clip[1] + clip[5] * clip[5] + clip[9] * clip[9];
+            if (x <= 0.0f || y <= 0.0f)
+                return;
+            const float ratio = std::sqrt(y / x);
+            m_ratioSum += ratio;
+            ++m_ratioCount;
+            if (ratio > 1.25f && ratio < 1.42f)
+                ++m_votes43;
+            else if (ratio > 1.68f && ratio < 1.88f)
+                ++m_votes169;
+        }
         void setFog(const native_renderer::Fog &fog) override { m_rec.fog = fog; }
         void setBloom(const native_renderer::Bloom &bloom) override { m_rec.bloom = bloom; }
         void addScreenBlur(const native_renderer::ScreenBlur &blur) override { m_rec.blurs.push_back(blur); }
@@ -2482,6 +3057,14 @@ namespace
             {
                 m_nextMemLog = native_renderer::nowUs() + 5000000u;
                 logMemory();
+            }
+            decideAspect();
+            if (r->direct && m_renderScale > 0.0f)
+            {
+                // The picture at the display's pixels: the rectangle it takes on the screen (RECOLOSSUS_RENDER_SCALE of it).
+                const VkRect2D fit = r->fitRect();
+                width = std::max(64u, static_cast<uint32_t>(fit.extent.width * m_renderScale + 0.5f)) & ~1u;
+                height = std::max(64u, static_cast<uint32_t>(fit.extent.height * m_renderScale + 0.5f)) & ~1u;
             }
             m_width = width;
             m_height = height;
@@ -2531,6 +3114,44 @@ namespace
             std::vector<Renderer::Upload> uploads;
             std::vector<Renderer::FrameMesh> frameMeshes;
         };
+
+        // The aspect the picture is shown at: RECOLOSSUS_ASPECT=4:3 / 16:9, or the game's own (auto: the votes of 20
+        // frames running, so a frame of the other kind does not flip it); the settings menu's Stretch fills the screen.
+        void decideAspect()
+        {
+            const int mode = hostmenu::settings().screenMode.load(std::memory_order_relaxed);
+            r->pictureStretched = mode == hostmenu::kScreenStretch;
+            int vote = 0;
+            if (m_votes169 >= 3 && m_votes169 > m_votes43)
+                vote = 169;
+            else if (m_votes43 >= 3 && m_votes43 > m_votes169)
+                vote = 43;
+            if (m_aspectLog && ++m_aspectFrames % 600u == 0u)
+                std::fprintf(stderr, "[native:vk] aspect: shown %s, this frame %u draws at 4:3, %u at 16:9, mean ratio %.3f\n",
+                             m_aspect == 169 ? "16:9" : "4:3", m_votes43, m_votes169, m_ratioCount ? m_ratioSum / m_ratioCount : 0.0f);
+            m_votes43 = m_votes169 = m_ratioCount = 0;
+            m_ratioSum = 0.0f;
+            // The game draws for a 4:3 screen (it has no 16:9 setting): 4:3, or 16:9 with RECOLOSSUS_WIDESCREEN; the
+            // projection's ratio is only logged (RECOLOSSUS_ASPECT=auto follows it, for a game patched to 16:9).
+            int want = m_widescreen ? 169 : 43;
+            if (m_forcedAspect > 0)
+                want = m_forcedAspect;
+            else if (m_forcedAspect < 0)
+            {
+                if (vote && vote != m_aspect && ++m_aspectRun >= 20u)
+                    m_aspectRun = 0, want = vote;
+                else
+                {
+                    if (!vote || vote == m_aspect)
+                        m_aspectRun = 0;
+                    want = m_aspect;
+                }
+            }
+            if (want != m_aspect)
+                std::fprintf(stderr, "[native:vk] aspect %s\n", want == 169 ? "16:9" : "4:3");
+            m_aspect = want;
+            r->pictureAspect = m_aspect == 169 ? 16.0f / 9.0f : 4.0f / 3.0f;
+        }
 
         void clearFrame()
         {
@@ -2737,8 +3358,26 @@ namespace
             for (;;)
             {
                 std::unique_lock<std::mutex> lock(m_mutex);
+                bool idle = false;
                 while (!m_queued && m_side.empty())
+                {
+                    if (r->idleDue())
+                    {
+                        idle = true;
+                        break;
+                    }
                     m_work.wait_for(lock, kRecheck);
+                }
+                if (idle)
+                {
+                    m_busy = true;
+                    lock.unlock();
+                    r->presentIdle();
+                    lock.lock();
+                    m_busy = false;
+                    m_idle.notify_all();
+                    continue;
+                }
                 if (!m_side.empty())
                 {
                     m_sideApplying.swap(m_side);
@@ -2804,6 +3443,12 @@ namespace
         std::vector<Renderer::Upload> m_side, m_sideApplying;
         uint64_t m_sideBytes = 0;
         uint32_t m_width = 0, m_height = 0;
+        // the aspect (decideAspect) and the picture's size on the display
+        uint32_t m_votes43 = 0, m_votes169 = 0, m_ratioCount = 0, m_aspectRun = 0, m_aspectFrames = 0;
+        float m_ratioSum = 0.0f;
+        int m_aspect = 43, m_forcedAspect = 0;
+        bool m_aspectLog = false, m_widescreen = false;
+        float m_renderScale = 1.0f;
     };
 }
 
