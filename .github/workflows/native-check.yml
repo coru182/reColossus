@@ -8,12 +8,18 @@ on:
   workflow_dispatch:
     inputs:
       seconds:
-        description: How long the game runs
-        default: "150"
-      emulated:
-        description: The emulated GS instead of the native renderer (for comparison)
+        description: How long each run may take at most
+        default: "600"
+      configs:
+        description: "Runs, ';'-separated: label:ENV=value,ENV=value (an empty list: the native renderer as it is)"
+        default: "native:;emulated:RECOLOSSUS_EMULATED_GS=1"
+      frames:
+        description: The game frame each run ends at
+        default: "4200"
+      snapshots:
+        description: Screenshots every 300 game frames, kept in the private repository's 'checks' release (never here)
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: read
@@ -73,26 +79,47 @@ jobs:
       - name: Run the game
         env:
           SECONDS_TO_RUN: ${{ inputs.seconds }}
-          EMULATED: ${{ inputs.emulated }}
+          CONFIGS: ${{ inputs.configs }}
+          FRAMES: ${{ inputs.frames }}
+          SNAPSHOTS: ${{ inputs.snapshots }}
+          GH_TOKEN: ${{ secrets.SOC_FILES_TOKEN }}
         run: |
           C=$PWD/work/celosia
-          mkdir -p "$C/logs" "$RUNNER_TEMP/memcards"
-          if [ "$EMULATED" = true ]; then export RECOLOSSUS_EMULATED_GS=1; fi
-          export PS2X_STATS=1 SOTC_FRAME_LOG=1 SOTC_GL_MEM_LOG=1 PS2X_MEMCARD_DIR="$RUNNER_TEMP/memcards"
-          export PS2X_INPUT_SCRIPT="20:DOWN:0.3;22:CROSS:0.3;30:CROSS:0.3;40:CROSS:0.3;60:CROSS:0.3;80:CROSS:0.3"
-          export PS2X_PROFILE="$C/logs/guest_profile.txt" PS2X_PROFILE_START=3
+          SHOTS=$RUNNER_TEMP/shots
+          mkdir -p "$C/logs" "$SHOTS"
           glxinfo -B 2>/dev/null | grep -E "renderer|version" | head -3 || true
-          (cd "$C" && timeout -s KILL "$SECONDS_TO_RUN" xvfb-run -a -s "-screen 0 1280x720x24" \
-            build/cmake/ps2xRuntime/ps2EntryRunner disc/SCUS_974.72 > "$C/logs/run.log" 2>&1) || true
-          L=$C/logs/run.log
-          echo "== the run: $(wc -l < "$L") lines"
-          grep -a -o -E "\[native[^]]*\][^[]{0,160}|\[sotc[^]]*\][^[]{0,120}|\[mc2\][^[]{0,80}|GAMECORE entered[^[]{0,40}" "$L" | head -40
-          echo "== frame summaries (every 60 frames)"
-          grep -a -o -E "\[frame\] [0-9]+: [^[]{0,260}" "$L" | head -60
-          echo "== stats"
-          grep -a -o -E "\[stats\] t=[0-9]+ gameFps=[0-9.]+ shownFps=[0-9.]+|\[load\][^[]{0,100}" "$L" | head -80
-          echo "== the guest profile: the 40 most sampled pc / ra"
-          if [ -f "$C/logs/guest_profile.txt" ]; then
-            head -2 "$C/logs/guest_profile.txt"
-            tail -n +3 "$C/logs/guest_profile.txt" | sort -k3 -n -r | head -40
+          IFS=';' read -ra runs <<< "$CONFIGS"
+          for run in "${runs[@]}"; do
+            label=${run%%:*}
+            vars=${run#*:}
+            [ -n "$label" ] || continue
+            echo "================ $label ($vars)"
+            rm -rf "$RUNNER_TEMP/memcards" && mkdir -p "$RUNNER_TEMP/memcards" "$SHOTS/$label"
+            (
+              export PS2X_STATS=1 SOTC_FRAME_LOG=1 PS2X_MEMCARD_DIR="$RUNNER_TEMP/memcards"
+              # the same moments in every run: inputs and the end counted in game frames
+              export PS2X_INPUT_CLOCK=frames PS2X_EXIT_AT_FRAME="$FRAMES"
+              export PS2X_INPUT_SCRIPT="1200:DOWN:20;1320:CROSS:20;1800:CROSS:20;2400:CROSS:20;3000:CROSS:20;3600:CROSS:20"
+              if [ "$SNAPSHOTS" = true ]; then export PS2X_SNAPSHOT_DIR="$SHOTS/$label" PS2X_SNAPSHOT_FRAMES=300; fi
+              IFS=',' read -ra kv <<< "$vars"
+              for v in "${kv[@]}"; do [ -n "$v" ] && export "$v"; done
+              cd "$C" && timeout -s KILL "$SECONDS_TO_RUN" xvfb-run -a -s "-screen 0 1280x720x24" \
+                build/cmake/ps2xRuntime/ps2EntryRunner disc/SCUS_974.72 > "$C/logs/$label.log" 2>&1
+            ) || true
+            L=$C/logs/$label.log
+            echo "== $label: $(wc -l < "$L") lines, $(ls "$SHOTS/$label" | wc -l) screenshots"
+            grep -a -o -E "\[native[^]]*\][^[]{0,160}|\[mc2\][^[]{0,80}" "$L" | head -8
+            grep -a -o -E "\[frame\] [0-9]+: [^|]{0,60}" "$L" | awk 'NR % 10 == 1' | head -10
+            grep -a -o -E "\[stats\] t=[0-9]+ gameFps=[0-9.]+ shownFps=[0-9.]+" "$L" | awk 'NR % 6 == 1' | head -10
+          done
+          if [ "$SNAPSHOTS" = true ] && [ -n "$(ls -A "$SHOTS")" ]; then
+            # PNG, kept in the private repository only: they show the game
+            sudo apt-get install -y -qq imagemagick > /dev/null
+            find "$SHOTS" -name '*.ppm' -exec sh -c 'convert "$1" "${1%.ppm}.png" && rm "$1"' _ {} \;
+            name=shots-${GITHUB_RUN_ID}.tar
+            tar -cf "$RUNNER_TEMP/$name" -C "$SHOTS" .
+            gh release view checks --repo "$SOC_REPO" > /dev/null 2>&1 ||
+              gh release create checks --repo "$SOC_REPO" --prerelease --title checks --notes "Screenshots of reColossus's Linux checks (private)"
+            gh release upload checks "$RUNNER_TEMP/$name" --repo "$SOC_REPO" --clobber
+            echo "screenshots: $name in $SOC_REPO's release 'checks'"
           fi
