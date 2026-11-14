@@ -1,4 +1,4 @@
-reColossus 0.3.0 - Shadow of the Colossus (PS2, USA) on a PS5 that runs homebrew
+reColossus 0.3.1 - Shadow of the Colossus (PS2, USA) on a PS5 that runs homebrew
 ================================================================================
 
 The PS2 game's code, translated into C++ ahead of time (Celosia's static recompilation with PS2Recomp) and compiled
@@ -7,17 +7,16 @@ IOP) is reimplemented by PS2Recomp's runtime. Bring your own game: the app conta
 
 The game's models are drawn by the PS5's GPU (Celosia's native renderer, here on Vulkan): the PS2's vector unit and
 graphics chip are not emulated for them. Since 0.3.0 the renderer puts its picture on the screen itself, in 4K
-(2880 x 2160 for the game's 4:3 picture, black bars at the sides; RECOLOSSUS_WIDESCREEN=1 for 16:9, below).
+(3840 x 2160 in the game's 16:9 mode, 2880 x 2160 with bars at the sides in its 4:3 mode).
 Something drawn wrong? RECOLOSSUS_EMULATED_GS=1 in env.txt goes back to the emulated graphics chip of 0.1.x (slow,
 but as the PS2 drew it).
 
 THE PICTURE
-The game was made for a 4:3 TV and has no 16:9 setting of its own. Three ways to show it:
-- as it is (the default): 4:3 with black bars at the sides, nothing distorted;
-- stretched: the settings menu (touchpad twice), Screen: Stretch; fills the screen, everything 33% wider;
-- widescreen (experimental): RECOLOSSUS_WIDESCREEN=1 in env.txt; you see more at the sides and nothing is
-  distorted, but the game still decides what to draw for its 4:3 view, so things can pop in at the left and right
-  edges, and the 2D parts (the stamina circle, fades) are stretched.
+- 16:9 without bars: in the game, Options > Screen Aspect Ratio > 16:9. The game widens its own view and reColossus
+  fills the screen with it (it follows the setting after a moment).
+- 4:3 (the game's default): bars at the sides, nothing distorted. The settings menu (touchpad twice), Screen:
+  Stretch, fills the screen with it anyway (everything wider).
+- RECOLOSSUS_ASPECT=4:3 or 16:9 in env.txt shows the picture at that aspect whatever the game's setting.
 Too bright? 0.3.0 halves the bloom (the glow around the sky and light). The settings menu's Bloom strength sets it
 (0 none, 1 the PS2's full strength), and RECOLOSSUS_GAMMA=1.2 in env.txt darkens the mid tones.
 
@@ -43,7 +42,7 @@ YOUR FILES
 
 SETTINGS (env.txt)
 RECOLOSSUS_EMULATED_GS=1 the PS2's graphics chip emulated instead of the native renderer (slow)
-RECOLOSSUS_WIDESCREEN=1  the 3D world seen at 16:9 (experimental, see THE PICTURE)
+RECOLOSSUS_ASPECT=x      4:3 or 16:9: the picture shown at that aspect (default: the game's own setting)
 RECOLOSSUS_OUTPUT=n      the screen mode: 2160 (4K, default), 1440 or 1080
 RECOLOSSUS_RENDER_SCALE=n  the picture drawn at n times the screen's pixels (0.25 to 1, default 1); lower is lighter
                          on the GPU

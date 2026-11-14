@@ -126,7 +126,7 @@ diff -ruN a/PS2Recomp/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp b/PS2Recomp/ps2x
      // A game override drawing natively (runtime/native_renderer.h) shows its picture instead.
 diff -ruN a/PS2Recomp/ps2xRuntime/src/lib/native/native_renderer.cpp b/PS2Recomp/ps2xRuntime/src/lib/native/native_renderer.cpp
 --- a/PS2Recomp/ps2xRuntime/src/lib/native/native_renderer.cpp	2026-11-11 13:46:58.497215577 -0300
-+++ b/PS2Recomp/ps2xRuntime/src/lib/native/native_renderer.cpp	2026-11-14 07:09:08.175106826 -0300
++++ b/PS2Recomp/ps2xRuntime/src/lib/native/native_renderer.cpp	2026-11-14 08:05:43.880021289 -0300
 @@ -33,6 +33,9 @@
  
  namespace native_renderer::detail
@@ -137,7 +137,7 @@ diff -ruN a/PS2Recomp/ps2xRuntime/src/lib/native/native_renderer.cpp b/PS2Recomp
  #if !defined(PS2X_HAVE_METAL)
      Backend *createMetalBackend() { return nullptr; }
  #endif
-@@ -66,6 +69,17 @@
+@@ -66,6 +69,20 @@
          d.holdIncomplete = true;
          d.warmShaders = true;
  #endif
@@ -151,11 +151,14 @@ diff -ruN a/PS2Recomp/ps2xRuntime/src/lib/native/native_renderer.cpp b/PS2Recomp
 +        // white (docs/known_issues.md, "bloom over the sky"), which players found too bright; the menu's Bloom
 +        // strength (or SOTC_BLOOM_SCALE) sets it
 +        d.bloomStrength = 0.5f;
++        // anisotropic 16x: the mip level from each pixel's footprint (the game's choice by depth is for 512 x 448,
++        // blurry at 4K); the menu's Texture filtering sets it
++        d.textureFilter = 6.0f;
 +#endif
          return d;
      }
  
-@@ -668,7 +682,9 @@
+@@ -668,7 +685,9 @@
  
      bool wantGl()
      {
@@ -166,7 +169,7 @@ diff -ruN a/PS2Recomp/ps2xRuntime/src/lib/native/native_renderer.cpp b/PS2Recomp
          return true;
  #else
          const char *gl = std::getenv("SOTC_NATIVE_GL");
-@@ -684,6 +700,12 @@
+@@ -684,6 +703,12 @@
          if (!g_tried)
          {
              g_tried = true;
@@ -179,7 +182,7 @@ diff -ruN a/PS2Recomp/ps2xRuntime/src/lib/native/native_renderer.cpp b/PS2Recomp
              if (wantGl() && g_glMakeCurrent)
              {
                  g_backend = native_renderer::detail::createGlBackend(g_glMakeCurrent);
-@@ -711,7 +733,11 @@
+@@ -711,7 +736,11 @@
  
  namespace native_renderer
  {
@@ -191,7 +194,7 @@ diff -ruN a/PS2Recomp/ps2xRuntime/src/lib/native/native_renderer.cpp b/PS2Recomp
      bool inEmulator() { return detail::g_inEmulator.load(std::memory_order_relaxed); }
      bool tuningApplies(const TuningItem &item) { return (item.backends & (wantGl() ? 2u : 1u)) != 0u; }
  
-@@ -727,6 +753,9 @@
+@@ -727,6 +756,9 @@
  
      bool available()
      {

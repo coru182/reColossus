@@ -54,7 +54,9 @@ void main()
         return;
     }
     float lod = uFogC.w > 0.0 ? clamp(log2(max(depth, 1e-3)) * uFogC.z + uFogC.y, 0.0, uFogC.w) : 0.0;
-    vec4 t = textured > 0.5 ? textureLod(uTex, vUV.xy, lod) : vec4(1.0);
+    // uFogC.w < 0: anisotropic filtering, the mip level from the pixel's footprint (the game's, by depth, is for its
+    // 512 x 448 picture: too coarse at 4K)
+    vec4 t = textured > 0.5 ? (uFogC.w < 0.0 ? texture(uTex, vUV.xy) : textureLod(uTex, vUV.xy, lod)) : vec4(1.0);
     float alpha = clamp(t.a * (textured > 0.5 ? 2.0 : 1.0) * vColor.a, 0.0, 1.0);
     if (alpha < 0.02)
         discard;

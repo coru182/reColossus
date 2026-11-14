@@ -729,14 +729,18 @@ namespace
             makeTarget(glowLayer, w, h, false);
             for (int i = 0; i < 4; ++i)
                 makeTarget(glowSmall[i], i == 0 ? 256u : (i == 1 ? 128u : 64u), i == 0 ? 256u : (i == 1 ? 128u : 64u), false);
-            makeTarget(backgroundSmall, 256, 256, false);
-            makeTarget(reflection, 256, 256, true);
-            makeTarget(refraction, 256, 256, false);
-            makeTarget(hazeSmall, 256, 256, false);
+            // The effect buffers (the background behind the distance fog, the mirror, the water's and the depth of
+            // field's copies): the PS2's 256 x 256 for its 512 x 448 picture, half the picture's size above that (at
+            // 256 x 256 under a 4K picture the far scenery the fog shows was blocky and shimmered).
+            const uint32_t ew = w > 512u ? w / 2u : 256u, eh = w > 512u ? h / 2u : 256u;
+            makeTarget(backgroundSmall, ew, eh, false);
+            makeTarget(reflection, ew, eh, true);
+            makeTarget(refraction, ew, eh, false);
+            makeTarget(hazeSmall, ew, eh, false);
             for (Target &t : prefix)
                 if (t.color.image)
                     makeTarget(t, w, h, true);
-            makeTarget(refractionHalf, 128, 128, false);
+            makeTarget(refractionHalf, std::max(128u, ew / 2u), std::max(128u, eh / 2u), false);
             for (Target &t : bloomTex)
                 makeTarget(t, std::max(w / 4u, 1u), std::max(h / 4u, 1u), false);
             for (int i = 0; i < 7; ++i)
@@ -753,7 +757,7 @@ namespace
             height = h;
             if (!direct && (!readback.buffer || readback.size < static_cast<VkDeviceSize>(w) * h * 4u))
                 makeStream(readback, static_cast<VkDeviceSize>(w) * h * 4u, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true);
-            std::fprintf(stderr, "[native:vk] targets %ux%u\n", w, h);
+            std::fprintf(stderr, "[native:vk] targets %ux%u, effect buffers %ux%u\n", w, h, ew, eh);
         }
 
         VkShaderModule shader(const uint32_t *code, size_t bytes)
@@ -2352,7 +2356,9 @@ namespace
             if (!load)
             {
                 const float mirrorClear[4] = {fog.colour[0], fog.colour[1], fog.colour[2], 1.0f}, black[4] = {0, 0, 0, 1};
-                clear(target, mirror ? mirrorClear : black, true); // reflectionBegin clears with alpha 0x80
+                // reflectionBegin clears with alpha 0x80; the background (what the distance fog fades into) to the fog's
+                // colour, so where nothing of it is drawn the fog shows its colour, not black patches
+                clear(target, mirror || backgroundOnly ? mirrorClear : black, true);
             }
             if (!mirror && !backgroundOnly && !load && fogOn && native_renderer::tuning().skyImage)
             {
@@ -2431,6 +2437,7 @@ namespace
                     if (d.state.texture && texIt == textures.end())
                         ++texStats.missing;
                     const int textured = d.state.previousFrame ? 5 : d.state.reflectionSample ? 2 : (d.state.refractionSample ? 3 : (d.state.screenCopy ? 4 : (texIt != textures.end() ? 1 : 0)));
+                    bool gpuLod = false; // anisotropic filtering: the GPU's own mip level (the game's is for 512 x 448)
                     if (textured == 5)
                         tex[0] = sampleTarget(&previous.color, target);
                     if (textured == 1)
@@ -2439,6 +2446,7 @@ namespace
                         t.used = arenaFrame;
                         const uint32_t filter = d.state.screen ? 2u : static_cast<uint32_t>(std::clamp(native_renderer::tuning().textureFilter + 0.5f, 0.0f, 6.0f));
                         tex[0] = Binding{t.image.view, gameSampler(d.state.clamp & 3u, filter, t.image.levels > 1u), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+                        gpuLod = filter >= 3u && t.image.levels > 1u && d.state.maxLod > 0.0f;
                     }
                     if (!backgroundOnly)
                         tex[1] = sampleTarget(&backgroundSmall.color, target);
@@ -2471,7 +2479,7 @@ namespace
                     u.fogC[0] = fog.scale;
                     u.fogC[1] = d.state.reflectionSample ? d.state.mirrorRipple[0] : d.state.lodK;
                     u.fogC[2] = d.state.reflectionSample ? d.state.mirrorRipple[1] : d.state.lodScale;
-                    u.fogC[3] = d.state.reflectionSample ? 0.0f : d.state.maxLod;
+                    u.fogC[3] = d.state.reflectionSample ? 0.0f : (gpuLod ? -1.0f : d.state.maxLod);
                     u.fogColour[0] = fog.colour[0];
                     u.fogColour[1] = fog.colour[1];
                     u.fogColour[2] = fog.colour[2];
@@ -2876,7 +2884,7 @@ namespace
             m_startUs = native_renderer::nowUs();
             m_widescreen = std::getenv("RECOLOSSUS_WIDESCREEN") && std::atoi(std::getenv("RECOLOSSUS_WIDESCREEN")) != 0;
             if (const char *a = std::getenv("RECOLOSSUS_ASPECT"))
-                m_forcedAspect = std::strcmp(a, "16:9") == 0 ? 169 : (std::strcmp(a, "4:3") == 0 ? 43 : (std::strcmp(a, "auto") == 0 ? -1 : 0));
+                m_forcedAspect = std::strcmp(a, "16:9") == 0 ? 169 : (std::strcmp(a, "4:3") == 0 ? 43 : 0);
             std::fprintf(stderr, "[native:vk] picture: %s%s\n", m_widescreen ? "widescreen 16:9 (RECOLOSSUS_WIDESCREEN)" : "4:3",
                          m_forcedAspect > 0 ? ", shown at RECOLOSSUS_ASPECT" : "");
             m_aspectLog = std::getenv("SOTC_FRAME_LOG") != nullptr;
@@ -2994,7 +3002,8 @@ namespace
             m_rec.draws.emplace_back(mesh, clip, state);
             if (wz < 1e-6f)
                 return;
-            if (m_widescreen)
+            if (m_widescreen && std::sqrt((clip[1] * clip[1] + clip[5] * clip[5] + clip[9] * clip[9]) /
+                                          std::max(1e-12f, clip[0] * clip[0] + clip[4] * clip[4] + clip[8] * clip[8])) < 1.46f)
             {
                 // RECOLOSSUS_WIDESCREEN: the 3D world seen wider (hor+, 16:9): clip x times 3/4. The 2D (the HUD,
                 // fades) is stretched to the screen; the game still culls models against its 4:3 view, so some pop
@@ -3014,9 +3023,10 @@ namespace
             const float ratio = std::sqrt(y / x);
             m_ratioSum += ratio;
             ++m_ratioCount;
-            if (ratio > 1.25f && ratio < 1.42f)
+            // the game's own 4:3 projection measures 1.257, its 16:9 setting 4/3 of that, 1.676
+            if (ratio > 1.15f && ratio < 1.46f)
                 ++m_votes43;
-            else if (ratio > 1.68f && ratio < 1.88f)
+            else if (ratio > 1.55f && ratio < 1.95f)
                 ++m_votes169;
         }
         void setFog(const native_renderer::Fog &fog) override { m_rec.fog = fog; }
@@ -3124,6 +3134,9 @@ namespace
         void decideAspect()
         {
             const int mode = hostmenu::settings().screenMode.load(std::memory_order_relaxed);
+            if (mode != m_screenMode)
+                std::fprintf(stderr, "[native:vk] the settings menu's Screen: %s\n", mode == hostmenu::kScreenStretch ? "Stretch" : "Fit");
+            m_screenMode = mode;
             r->pictureStretched = mode == hostmenu::kScreenStretch;
             int vote = 0;
             if (m_votes169 >= 3 && m_votes169 > m_votes43)
@@ -3135,13 +3148,15 @@ namespace
                              m_aspect == 169 ? "16:9" : "4:3", m_votes43, m_votes169, m_ratioCount ? m_ratioSum / m_ratioCount : 0.0f);
             m_votes43 = m_votes169 = m_ratioCount = 0;
             m_ratioSum = 0.0f;
-            // The game draws for a 4:3 screen (it has no 16:9 setting): 4:3, or 16:9 with RECOLOSSUS_WIDESCREEN; the
-            // projection's ratio is only logged (RECOLOSSUS_ASPECT=auto follows it, for a game patched to 16:9).
-            int want = m_widescreen ? 169 : 43;
+            // The game's own setting (Options, Screen Aspect Ratio: 4:3 or 16:9, which widens its projection), read from
+            // the projection (20 frames running agree before it changes); RECOLOSSUS_ASPECT=4:3 / 16:9 sets it instead.
+            int want = m_aspect;
             if (m_forcedAspect > 0)
                 want = m_forcedAspect;
-            else if (m_forcedAspect < 0)
+            else
             {
+                if (m_widescreen && vote == 43)
+                    vote = 169; // widened here (RECOLOSSUS_WIDESCREEN)
                 if (vote && vote != m_aspect && ++m_aspectRun >= 20u)
                     m_aspectRun = 0, want = vote;
                 else
@@ -3450,7 +3465,7 @@ namespace
         // the aspect (decideAspect) and the picture's size on the display
         uint32_t m_votes43 = 0, m_votes169 = 0, m_ratioCount = 0, m_aspectRun = 0, m_aspectFrames = 0;
         float m_ratioSum = 0.0f;
-        int m_aspect = 43, m_forcedAspect = 0;
+        int m_aspect = 43, m_forcedAspect = 0, m_screenMode = -1;
         bool m_aspectLog = false, m_widescreen = false;
         float m_renderScale = 1.0f;
     };
