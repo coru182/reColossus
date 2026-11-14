@@ -1,6 +1,6 @@
 diff -ruN a/PS2Recomp/ps2xRuntime/CMakeLists.txt b/PS2Recomp/ps2xRuntime/CMakeLists.txt
 --- a/PS2Recomp/ps2xRuntime/CMakeLists.txt	2026-11-10 23:40:58.160185515 -0300
-+++ b/PS2Recomp/ps2xRuntime/CMakeLists.txt	2026-11-11 13:47:10.706020184 -0300
++++ b/PS2Recomp/ps2xRuntime/CMakeLists.txt	2026-11-14 07:27:38.741020967 -0300
 @@ -64,6 +64,18 @@
      set(PS2X_IS_ANDROID ON)
  endif()
@@ -67,7 +67,7 @@ diff -ruN a/PS2Recomp/ps2xRuntime/CMakeLists.txt b/PS2Recomp/ps2xRuntime/CMakeLi
 +    set(PS2X_PS5_VULKAN_INCLUDE "" CACHE PATH "Vulkan headers (reUndr-ps5's PS5_Mesa/include)")
 +    target_sources(ps2_runtime PRIVATE "${PS2X_PS5_DIR}/vk/native_renderer_vk.cpp")
 +    set_source_files_properties("${PS2X_PS5_DIR}/vk/native_renderer_vk.cpp" PROPERTIES SKIP_PRECOMPILE_HEADERS ON SKIP_UNITY_BUILD_INCLUSION ON)
-+    target_include_directories(ps2_runtime PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/lib/native" "${PS2X_PS5_VULKAN_INCLUDE}")
++    target_include_directories(ps2_runtime PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/lib/native" "${PS2X_PS5_VULKAN_INCLUDE}" "${PS2X_PS5_DIR}/..")
 +endif()
  if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT ANDROID)
      find_package(OpenGL REQUIRED)
