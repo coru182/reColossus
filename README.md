@@ -16,7 +16,7 @@
 
 > [!WARNING]
 > **Early work.** The game's code runs natively, and since 0.2 its models are drawn by the PS5's GPU: Celosia's native
-> renderer, ported here to Vulkan (`ps5/vk`), at the PS2's resolution for now, scaled to 1080p. 0.1 drew the PS2's
+> renderer, ported here to Vulkan (`ps5/vk`), which since 0.3 presents to the PS5's display itself, in 4K. 0.1 drew the PS2's
 > graphics with PS2Recomp's software graphics synthesizer on the CPU (3-5 fps); `RECOLOSSUS_EMULATED_GS=1` in
 > `env.txt` still does.
 

@@ -5,6 +5,7 @@ layout(push_constant) uniform Push
 {
     int uMode; // 0 the picture (opaque), 1 the overlay (straight alpha)
     int uFlip;
+    float uGamma; // the picture's: 1 as drawn, more darkens the mid tones (RECOLOSSUS_GAMMA)
 };
 layout(location = 0) out vec2 vUV;
 const vec2 kTriangle[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));

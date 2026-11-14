@@ -433,6 +433,7 @@ namespace
         uint32_t presentImage = 0;
         float pictureAspect = 4.0f / 3.0f; // the display aspect the picture is shown at (this frame's)
         float cpuAspect = 4.0f / 3.0f;     // the host's pictures' (the emulated GS's)
+        float displayGamma = 1.0f;         // RECOLOSSUS_GAMMA: the picture's mid tones on the display
         bool pictureStretched = false;
         bool setupDisplay();
         bool setupSwapchain(VkExtent2D extent);
@@ -1934,6 +1935,8 @@ namespace
                 return false;
             swapchainFramebuffers.push_back(f);
         }
+        if (const char *g = std::getenv("RECOLOSSUS_GAMMA"))
+            displayGamma = std::clamp(static_cast<float>(std::atof(g)), 0.5f, 2.0f);
         presentVert = shader(kVkPresentVert, sizeof(kVkPresentVert));
         presentFrag = shader(kVkPresentFrag, sizeof(kVkPresentFrag));
         if (!presentVert || !presentFrag)
@@ -2020,7 +2023,8 @@ namespace
         struct
         {
             int32_t mode, flip;
-        } push{0, presentCpu ? 0 : 1};
+            float gamma;
+        } push{0, presentCpu ? 0 : 1, displayGamma};
         auto draw = [&](VkPipeline pipeline, Image &img, VkRect2D rect)
         {
             const Binding b[3] = {{img.view, linearClamp, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},

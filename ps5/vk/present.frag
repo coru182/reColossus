@@ -5,11 +5,12 @@ layout(push_constant) uniform Push
 {
     int uMode;
     int uFlip;
+    float uGamma; // the picture's: 1 as drawn, more darkens the mid tones (RECOLOSSUS_GAMMA)
 };
 layout(location = 0) out vec4 oColor;
 void main()
 {
     vec4 c = texture(uSrc, vUV);
     // The display shows colour only: the picture's alpha is the GS's, not a coverage (as the host loop drew it).
-    oColor = uMode == 0 ? vec4(c.rgb, 1.0) : c;
+    oColor = uMode == 0 ? vec4(pow(c.rgb, vec3(uGamma)), 1.0) : c;
 }
