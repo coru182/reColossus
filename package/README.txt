@@ -1,4 +1,4 @@
-reColossus 0.3.1 - Shadow of the Colossus (PS2, USA) on a PS5 that runs homebrew
+reColossus 0.3.2 - Shadow of the Colossus (PS2, USA) on a PS5 that runs homebrew
 ================================================================================
 
 The PS2 game's code, translated into C++ ahead of time (Celosia's static recompilation with PS2Recomp) and compiled
@@ -46,6 +46,8 @@ RECOLOSSUS_ASPECT=x      4:3 or 16:9: the picture shown at that aspect (default:
 RECOLOSSUS_OUTPUT=n      the screen mode: 2160 (4K, default), 1440 or 1080
 RECOLOSSUS_RENDER_SCALE=n  the picture drawn at n times the screen's pixels (0.25 to 1, default 1); lower is lighter
                          on the GPU
+RECOLOSSUS_SHARP_TEXT=0  text and icons left as the PS2's textures magnified (soft); by default their edges are
+                         cut sharp at the screen's resolution
 RECOLOSSUS_GAMMA=n       the picture's mid tones: 1 as drawn (default), 1.2 darker, 0.9 lighter
 SOTC_BLOOM_SCALE=n       the bloom: 0 none, 0.5 (default), 1 the PS2's full strength
 RECOLOSSUS_PRESENT=host  the picture shown as in 0.2 (read back from the GPU, 1080p); then SOTC_RENDER_SCALE=n draws

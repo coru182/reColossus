@@ -189,7 +189,31 @@ namespace
     {
         Image image;
         uint64_t used = 0, bytes = 0;
+        bool cutOut = false; // alpha mostly none or full (text, icons): drawn in 2D with sharp edges
     };
+
+    // A texture whose alpha is mostly 0 or full, with both (the font's glyphs, the HUD's icons): its edges, magnified
+    // from the PS2's sizes to 4K, are cut sharp in 2D draws rather than left as a bilinear blur.
+    bool cutOutAlpha(const uint8_t *rgba, uint32_t w, uint32_t h)
+    {
+        const size_t n = static_cast<size_t>(w) * h;
+        if (n < 64)
+            return false;
+        uint32_t top = 0;
+        for (size_t i = 0; i < n; ++i)
+            top = std::max<uint32_t>(top, rgba[i * 4 + 3]);
+        if (top < 32)
+            return false;
+        const uint32_t low = top / 16u, high = top - top / 16u;
+        size_t none = 0, full = 0;
+        for (size_t i = 0; i < n; ++i)
+        {
+            const uint32_t a = rgba[i * 4 + 3];
+            none += a <= low ? 1u : 0u;
+            full += a >= high ? 1u : 0u;
+        }
+        return none + full >= n - n / 6u && none >= n / 10u && full >= n / 40u;
+    }
 
     struct Draw
     {
@@ -434,6 +458,7 @@ namespace
         float pictureAspect = 4.0f / 3.0f; // the display aspect the picture is shown at (this frame's)
         float cpuAspect = 4.0f / 3.0f;     // the host's pictures' (the emulated GS's)
         float displayGamma = 1.0f;         // RECOLOSSUS_GAMMA: the picture's mid tones on the display
+        bool sharpText = !std::getenv("RECOLOSSUS_SHARP_TEXT") || std::atoi(std::getenv("RECOLOSSUS_SHARP_TEXT")) != 0;
         bool pictureStretched = false;
         bool setupDisplay();
         bool setupSwapchain(VkExtent2D extent);
@@ -2243,6 +2268,7 @@ namespace
                     break;
                 }
                 textureBytes += t.bytes;
+                t.cutOut = sharpText && cutOutAlpha(u.bytes.data(), u.width, u.height);
                 std::memcpy(staging.mapped + at, u.bytes.data(), u.bytes.size());
                 VkBufferImageCopy regions[16]{};
                 uint32_t n = 0;
@@ -2438,6 +2464,7 @@ namespace
                         ++texStats.missing;
                     const int textured = d.state.previousFrame ? 5 : d.state.reflectionSample ? 2 : (d.state.refractionSample ? 3 : (d.state.screenCopy ? 4 : (texIt != textures.end() ? 1 : 0)));
                     bool gpuLod = false; // anisotropic filtering: the GPU's own mip level (the game's is for 512 x 448)
+                    bool crisp = false;  // a cut-out texture in 2D: its alpha edges cut sharp (text, icons)
                     if (textured == 5)
                         tex[0] = sampleTarget(&previous.color, target);
                     if (textured == 1)
@@ -2447,6 +2474,7 @@ namespace
                         const uint32_t filter = d.state.screen ? 2u : static_cast<uint32_t>(std::clamp(native_renderer::tuning().textureFilter + 0.5f, 0.0f, 6.0f));
                         tex[0] = Binding{t.image.view, gameSampler(d.state.clamp & 3u, filter, t.image.levels > 1u), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
                         gpuLod = filter >= 3u && t.image.levels > 1u && d.state.maxLod > 0.0f;
+                        crisp = t.cutOut && d.state.screen;
                     }
                     if (!backgroundOnly)
                         tex[1] = sampleTarget(&backgroundSmall.color, target);
@@ -2483,7 +2511,7 @@ namespace
                     u.fogColour[0] = fog.colour[0];
                     u.fogColour[1] = fog.colour[1];
                     u.fogColour[2] = fog.colour[2];
-                    u.fogColour[3] = static_cast<float>(textured);
+                    u.fogColour[3] = static_cast<float>(textured) + (crisp ? 10.0f : 0.0f);
                     u.debug[0] = static_cast<float>(d.state.debugColour & 0xFFu) / 255.0f;
                     u.debug[1] = static_cast<float>((d.state.debugColour >> 8) & 0xFFu) / 255.0f;
                     u.debug[2] = static_cast<float>((d.state.debugColour >> 16) & 0xFFu) / 255.0f;

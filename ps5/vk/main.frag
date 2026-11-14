@@ -22,6 +22,10 @@ layout(location = 0) out vec4 oColor;
 void main()
 {
     float textured = uFogColour.w;
+    // + 10: a cut-out texture in 2D (text, icons), its alpha edge cut sharp at the picture's resolution
+    bool crisp = textured > 10.5;
+    if (crisp)
+        textured -= 10.0;
     vec2 screen = vScreen.xy / vScreen.z * 0.5 + 0.5;
     float depth = vUV.z;
     if (textured > 4.5) // the last frame shown, at the draw's UV
@@ -57,7 +61,15 @@ void main()
     // uFogC.w < 0: anisotropic filtering, the mip level from the pixel's footprint (the game's, by depth, is for its
     // 512 x 448 picture: too coarse at 4K)
     vec4 t = textured > 0.5 ? (uFogC.w < 0.0 ? texture(uTex, vUV.xy) : textureLod(uTex, vUV.xy, lod)) : vec4(1.0);
-    float alpha = clamp(t.a * (textured > 0.5 ? 2.0 : 1.0) * vColor.a, 0.0, 1.0);
+    float ta = t.a * (textured > 0.5 ? 2.0 : 1.0);
+    if (crisp)
+    {
+        // the bilinear alpha of a glyph magnified many times, as a distance to its edge: a pixel or so of
+        // smoothing at the edge, wherever the texture is drawn larger than it is
+        float w = clamp(fwidth(ta), 1e-3, 0.5); // at most 0..1 (drawn at its own size: as it is)
+        ta = smoothstep(0.5 - w, 0.5 + w, ta);
+    }
+    float alpha = clamp(ta * vColor.a, 0.0, 1.0);
     if (alpha < 0.02)
         discard;
     if (uDebug.w > 0.0)
